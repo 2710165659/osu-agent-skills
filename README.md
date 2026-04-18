@@ -9,9 +9,7 @@
 
 ## 使用
 
-进入项目目录后运行：
-
+### osu-beatmap-preview
 ```bash
-cd 
 python osu-beatmap-preview/scripts/run.py --bid="5199917"
 ```
