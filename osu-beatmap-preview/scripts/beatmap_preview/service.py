@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .downloader import download_beatmap_file
 from .errors import PreviewError
+from .models import Beatmap
 from .parser import parse_beatmap
 from .renderer_catch import render_catch_preview
 from .renderer_mania import render_mania_preview
@@ -13,7 +14,7 @@ from .renderer_taiko import render_taiko_preview
 
 
 def generate_preview(bid: str, skill_root: Path) -> dict[str, object]:
-    """Download a beatmap, parse it, dispatch to the right renderer, and return JSON-ready output."""
+    """下载谱面并返回 JSON 友好的预览结果。"""
     if not bid.isdigit():
         raise PreviewError("bid must be numeric")
 
@@ -22,8 +23,6 @@ def generate_preview(bid: str, skill_root: Path) -> dict[str, object]:
 
     output_path = skill_root / "outputs" / f"{bid}.png"
     preview_path = _render_preview_for_mode(beatmap, output_path)
-    if preview_path is None:
-        raise PreviewError(f"preview rendering for mode {beatmap.mode} is not implemented yet")
 
     return {
         "status": "success",
@@ -37,6 +36,7 @@ def generate_preview(bid: str, skill_root: Path) -> dict[str, object]:
 
 
 def _format_section_keys(section: dict[str, str]) -> dict[str, str]:
+    # 输出字段按 skill 约定从 osu! 原始 CamelCase 转为 hyphen-case。
     return {
         re.sub(
             r"([A-Z]+)([A-Z][a-z])",
@@ -47,8 +47,8 @@ def _format_section_keys(section: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _render_preview_for_mode(beatmap, output_path: Path) -> Path | None:
-    # osu! uses mode ids 0=standard, 1=taiko, 2=catch, 3=mania.
+def _render_preview_for_mode(beatmap: Beatmap, output_path: Path) -> Path:
+    # osu! 模式编号：0=standard, 1=taiko, 2=catch, 3=mania。
     if beatmap.mode == 0:
         return render_standard_preview(beatmap, output_path)
     if beatmap.mode == 1:

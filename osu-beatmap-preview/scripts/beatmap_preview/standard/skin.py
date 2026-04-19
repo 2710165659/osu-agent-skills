@@ -38,7 +38,7 @@ class StandardSkin:
 
 
 def load_standard_skin() -> StandardSkin:
-    """Load the fixed standard skin assets copied into assets/standard."""
+    """加载随 skill 固定携带的 standard 皮肤资源。"""
     for file_name in REQUIRED_SKIN_FILES:
         asset_path = STANDARD_ASSET_DIR / file_name
         if not asset_path.exists():

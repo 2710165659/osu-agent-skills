@@ -22,7 +22,7 @@ def choose_row_start_times(
     ms_per_row_duration: int,
     break_gap_ms: int,
 ) -> list[RowTiming]:
-    """Choose row ranges. Random rows avoid breaks; the PreviewTime row is preserved."""
+    """选择预览行时间段：随机行避开 break，同时保留 PreviewTime 行。"""
     row_duration = (images_per_row - 1) * ms_per_row_duration
     valid_intervals = _build_valid_row_start_intervals(hit_objects, beatmap.break_periods, row_duration, break_gap_ms)
     if not valid_intervals:
@@ -35,6 +35,7 @@ def choose_row_start_times(
     chosen = [preview_time]
     random_source = random.Random()
     attempts = 0
+    # 先随机抽样，避免每次都集中在谱面开头或密集段。
     while len(chosen) < row_count and attempts < 3000:
         attempts += 1
         candidate = _random_start_from_intervals(valid_intervals, random_source)
@@ -42,6 +43,7 @@ def choose_row_start_times(
             chosen.append(candidate)
 
     if len(chosen) < row_count:
+        # 随机不足时退回到物件起点，保证短谱也尽量能生成完整网格。
         for candidate in _fallback_start_candidates(valid_intervals, hit_objects):
             if _does_not_overlap_existing(candidate, row_duration, chosen):
                 chosen.append(candidate)
@@ -69,6 +71,7 @@ def _build_valid_row_start_intervals(
 ) -> list[tuple[int, int]]:
     chart_start = hit_objects[0].start_time
     chart_end = max(hit_object.end_time for hit_object in hit_objects)
+    # 明确声明的 break 和根据长空白推断出的 break 都不作为随机预览行候选。
     forbidden = _merge_periods([*break_periods, *_infer_break_periods(hit_objects, break_gap_ms)])
     playable_segments = _subtract_periods(chart_start, chart_end, forbidden)
     intervals = []
@@ -112,6 +115,7 @@ def _subtract_periods(
     segments: list[tuple[int, int]] = []
     cursor = start_time
 
+    # 用游标从左到右扣掉 forbidden period，得到剩余可播放区间。
     for period in forbidden_periods:
         if period.end_time <= cursor:
             continue
@@ -130,6 +134,7 @@ def _nearest_valid_start(time: int, intervals: list[tuple[int, int]]) -> int:
     if any(start <= time <= end for start, end in intervals):
         return time
 
+    # fallback 候选若落在 break 内，就吸附到最近的合法区间边界。
     return min(
         (start if time < start else end for start, end in intervals),
         key=lambda candidate: abs(candidate - time),

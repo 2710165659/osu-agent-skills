@@ -81,7 +81,7 @@ class RenderSettings:
 
 
 def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> Image.Image:
-    """Render osu!standard as a grid of gameplay snapshots."""
+    """把 osu!standard 谱面渲染为多行游玩截图网格。"""
     skin = load_standard_skin()
     settings = _build_render_settings(beatmap)
     frame_layout = _build_frame_layout()
@@ -99,6 +99,7 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
     canvas = Image.new("RGBA", _build_canvas_size(), CANVAS_BACKGROUND_COLOR)
     draw = ImageDraw.Draw(canvas)
 
+    # 每一行是一段时间窗口，行内多张截图按固定间隔向后推进。
     for row_index, row_timing in enumerate(row_timings):
         y = VERTICAL_PAGE_MARGIN + row_index * (
             IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT + INTER_ROW_GAP
@@ -136,6 +137,7 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
 def _build_render_settings(beatmap: Beatmap) -> RenderSettings:
     circle_size = float(beatmap.difficulty["CircleSize"])
     approach_rate = float(beatmap.difficulty["ApproachRate"])
+    # stable 的物件半径由 CS 映射而来，并带一个历史兼容用的 rounding allowance。
     scale = (1.0 - 0.7 * ((circle_size - 5.0) / 5.0)) / 2.0 * BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE
     circle_radius = OBJECT_RADIUS * scale
     circle_diameter = max(1, round(circle_radius * 2))
@@ -187,6 +189,7 @@ def _build_combo_info(
     previous_was_spinner = False
 
     for index, hit_object in enumerate(hit_objects):
+        # 新 combo 从首个物件、spinner 后或 new_combo 位标志开始。
         starts_combo = index == 0 or previous_was_spinner or (hit_object.new_combo and not _is_spinner(hit_object))
         if starts_combo:
             if index > 0:
@@ -220,7 +223,7 @@ def _render_frame(
         if _is_visible(hit_object, snapshot_time, settings.preempt_ms)
     ]
 
-    # Later objects are painted first so the next object to hit remains readable on top.
+    # 后出现的物件先绘制，保证当前最接近击打的物件位于上层。
     for index in sorted(visible_indexes, key=lambda item: hit_objects[item].start_time, reverse=True):
         hit_object = hit_objects[index]
         combo = combo_info[index]
@@ -313,6 +316,7 @@ def _slider_snaked_range(
 
     if snapshot_time < hit_object.start_time:
         if SNAKING_IN_SLIDERS:
+            # slider 出现前只展示从头部逐渐展开的路径。
             snake_start = hit_object.start_time - settings.preempt_ms
             end = max(0.0, min(1.0, (snapshot_time - snake_start) / (settings.preempt_ms / 3)))
         return start, end
@@ -325,6 +329,7 @@ def _slider_snaked_range(
     span_progress = _slider_path_progress(span_count, completion)
 
     if span >= span_count - 1 and SNAKING_OUT_SLIDERS:
+        # 最后一段开启 snaking out 时，根据当前方向裁掉已经走过的一端。
         if span % 2 == 1:
             end = span_progress
         else:
@@ -377,6 +382,7 @@ def _object_alpha(
     settings: RenderSettings,
 ) -> float:
     if snapshot_time < start_time:
+        # preempt 阶段按 fade-in 时间从透明过渡到完整可见。
         fade_start = start_time - settings.preempt_ms
         return max(0.0, min(1.0, (snapshot_time - fade_start) / settings.fade_in_ms))
     if snapshot_time <= end_time:
@@ -508,6 +514,7 @@ def _draw_slider_body(
     inner_track = _legacy_lighten(track_color, 0.5)
     middle_track = _mix_rgb(outer_track, inner_track, 0.5)
 
+    # legacy slider body 用多层粗线叠出阴影、边框和轨道高光。
     _draw_round_path(draw, scaled_points, shadow_width * scale, (0, 0, 0, round(255 * alpha * SLIDER_LEGACY_SHADOW_ALPHA)))
     _draw_round_path(draw, scaled_points, width * scale, (*border_color, round(255 * alpha)))
     _draw_round_path(draw, scaled_points, accent_width * scale, (*outer_track, round(255 * alpha * SLIDER_LEGACY_TRACK_ALPHA)))
@@ -659,7 +666,7 @@ def _draw_break_overlay(
     break_period: BreakPeriod,
     snapshot_time: int,
 ) -> None:
-    """Draw the osu! break overlay shape: centre countdown and remaining-time bar."""
+    """绘制 break overlay：中央倒计时和剩余时间条。"""
     alpha = _break_overlay_alpha(break_period, snapshot_time)
     if alpha <= 0:
         return

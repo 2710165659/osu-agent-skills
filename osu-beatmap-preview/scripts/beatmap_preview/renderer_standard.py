@@ -8,7 +8,7 @@ from .standard import render_standard_grid
 
 
 def render_standard_preview(beatmap: Beatmap, output_path: Path) -> Path:
-    """Render a standard mode preview."""
+    """渲染 osu!standard 预览图。"""
     try:
         hit_objects = [hit_object for hit_object in beatmap.hit_objects if isinstance(hit_object, StandardHitObject)]
         if not hit_objects:
@@ -20,5 +20,5 @@ def render_standard_preview(beatmap: Beatmap, output_path: Path) -> Path:
         return output_path
     except PreviewError:
         raise
-    except Exception as exc:
+    except (OSError, KeyError, ValueError, IndexError, ZeroDivisionError) as exc:
         raise PreviewError("Failed to render preview.") from exc

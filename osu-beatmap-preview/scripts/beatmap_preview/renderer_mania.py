@@ -82,7 +82,7 @@ def render_mania_preview(
     beatmap: Beatmap,
     output_path: Path,
 ) -> Path:
-    # Render the full mania chart into a single image, splitting into columns when needed.
+    # 将完整 mania 谱面渲染为单张图片，长谱面按列切分。
     try:
         key_count = int(float(beatmap.difficulty["CircleSize"]))
         palette = LANE_COLOR_PALETTES[key_count]
@@ -107,7 +107,9 @@ def render_mania_preview(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         image.save(output_path)
         return output_path
-    except Exception as exc:
+    except PreviewError:
+        raise
+    except (OSError, KeyError, ValueError, IndexError, ZeroDivisionError) as exc:
         raise PreviewError("Failed to render preview.") from exc
 
 
@@ -120,6 +122,7 @@ def _darken_hex(color: str, ratio: float) -> str:
 def _build_layout(key_count: int, beatmap_duration: int, chart_end_time: int) -> RenderLayout:
     total_chart_height = max(1, math.ceil(chart_end_time * PIXELS_PER_MS))
     column_count = _calculate_column_count(beatmap_duration, total_chart_height)
+    # 按列数反推每列时间跨度，保证最终图片高度被限制在可读范围内。
     time_per_column = math.ceil(chart_end_time / column_count)
     column_height = math.ceil(time_per_column * PIXELS_PER_MS)
     total_column_height = TOP_BUFFER + column_height
@@ -144,6 +147,7 @@ def _calculate_column_count(beatmap_duration: int, total_chart_height: int) -> i
         raise PreviewError("songs longer than 10 minutes are not supported")
 
     if beatmap_duration >= 6 * 60 * 1000:
+        # 长谱固定列数，避免图片高度继续线性增长。
         return FIXED_COLUMN_COUNT_6_TO_10_MIN
 
     max_area_height = _resolve_max_area_height(beatmap_duration)
@@ -206,6 +210,7 @@ def _draw_timing_line(
     column_left = PAGE_MARGIN_X + column_index * (layout.column_width + COLUMN_GAP)
     lane_area_left = column_left + LEFT_PANEL_WIDTH
     chart_top = PAGE_MARGIN_Y + TOP_BUFFER
+    # mania 视图时间从下往上推进，所以时间越晚 y 越小。
     y = chart_top + layout.column_height - round(local_time * PIXELS_PER_MS)
 
     draw.line(
@@ -250,6 +255,7 @@ def _draw_hit_object(
         chart_bottom = chart_axis_top + layout.column_height
         lane_left = lane_area_left + hit_object.lane * (LANE_WIDTH + LANE_GAP) + NOTE_SIDE_PADDING
         lane_right = lane_left + LANE_WIDTH - NOTE_SIDE_PADDING * 2
+        # 长条可能跨列，逐列裁剪当前列实际需要绘制的时间片段。
         segment_start = max(hit_object.start_time, column_index * layout.time_per_column)
         segment_end = min(hit_object.end_time, (column_index + 1) * layout.time_per_column)
         y_start = chart_axis_top + layout.column_height - round(
@@ -286,7 +292,7 @@ def _draw_hit_object(
 
 
 def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -> list[TimingLine]:
-    # Only uninherited timing points create visible beat and measure guides.
+    # 只有红线 timing point 会生成可见的小节线和拍线。
     base_points = [point for point in timing_points if point.uninherited]
     if not base_points:
         return []
@@ -318,12 +324,14 @@ def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -
 
     ordered_unique: dict[int, TimingLine] = {}
     for timing_line in timing_lines:
+        # 多个 timing section 边界可能生成同一毫秒的线，后写入的保留即可。
         ordered_unique[timing_line.time] = timing_line
     return [ordered_unique[time] for time in sorted(ordered_unique)]
 
 
 def _choose_subdivision(beat_length: float) -> int:
     beat_pixels = beat_length * PIXELS_PER_MS
+    # BPM 越快，拍线越密；减少细分能防止画面被网格线淹没。
     if beat_pixels >= 72:
         return 4
     if beat_pixels >= 28:

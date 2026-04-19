@@ -1,2 +1,2 @@
 class PreviewError(Exception):
-    """Raised when the skill cannot download, parse, or render a preview."""
+    """下载、解析或渲染预览失败时抛出的业务错误。"""

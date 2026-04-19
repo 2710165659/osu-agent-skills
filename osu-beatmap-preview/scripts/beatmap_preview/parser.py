@@ -19,6 +19,7 @@ def parse_beatmap(beatmap_path: Path) -> Beatmap:
     try:
         sections = _split_sections(beatmap_path.read_text(encoding="utf-8-sig"))
 
+        # .osu 文件把 Metadata、Difficulty 等内容拆在不同 section 中；后续解析都基于这些分组。
         metadata = _parse_key_value_section(sections, "Metadata")
         difficulty = _parse_key_value_section(sections, "Difficulty")
         general = _parse_key_value_section(sections, "General")
@@ -26,6 +27,7 @@ def parse_beatmap(beatmap_path: Path) -> Beatmap:
         break_periods = _parse_break_periods(sections)
         mode = int(general["Mode"])
 
+        # 各 mode 的 HitObjects 字段含义不同，先分派到专门解析函数再统一排序。
         if mode == 0:
             hit_objects = _parse_standard_hit_objects(sections, difficulty, timing_points)
         elif mode == 1:
@@ -45,7 +47,9 @@ def parse_beatmap(beatmap_path: Path) -> Beatmap:
             hit_objects=hit_objects,
             break_periods=break_periods,
         )
-    except Exception as exc:
+    except PreviewError:
+        raise
+    except (OSError, UnicodeError, KeyError, ValueError, IndexError, ZeroDivisionError) as exc:
         raise PreviewError("Failed to parse beatmap.") from exc
 
 
@@ -91,6 +95,7 @@ def _parse_timing_points(sections: dict[str, list[str]]) -> list[TimingPoint]:
         meter = int(parts[2]) if len(parts) > 2 and parts[2] else 4
         if meter <= 0:
             meter = 4
+        # 第 7 列为 1 或缺失时是红线 BPM；0 则是 inherited velocity。
         uninherited = len(parts) < 7 or parts[6] == "1"
         timing_points.append(
             TimingPoint(
@@ -146,6 +151,7 @@ def _parse_standard_hit_objects(
         slider_pixel_length = 0.0
 
         if hit_type & 2:
+            # Slider 专有字段从第 6 列开始：类型、控制点、重复次数和像素长度。
             slider_parts = parts[5].split("|")
             slider_type = slider_parts[0]
             slider_points = tuple(
@@ -245,6 +251,7 @@ def _parse_mania_hit_objects(
         x = int(parts[0])
         start_time = int(parts[2])
         hit_type = int(parts[3])
+        # mania 使用 x 坐标按键数等分出 lane，避免 renderer 再依赖原始坐标。
         lane = max(0, min(key_count - 1, x * key_count // 512))
         is_long_note = bool(hit_type & 128)
         end_time = start_time
@@ -270,6 +277,7 @@ def _parse_object_end_time(
     difficulty: dict[str, str],
     timing_points: list[TimingPoint],
 ) -> int:
+    # osu! hit_type 位标志：8=spinner，2=slider；普通物件结束时间就是开始时间。
     if hit_type & 8:
         return int(parts[5])
     if hit_type & 2:
@@ -283,7 +291,7 @@ def _parse_slider_end_time(
     difficulty: dict[str, str],
     timing_points: list[TimingPoint],
 ) -> int:
-    # Slider duration depends on the active red line beat length plus the latest velocity multiplier.
+    # Slider 时长由当前红线 BPM 和最近的 inherited velocity 共同决定。
     slides = int(parts[6])
     pixel_length = float(parts[7])
     slider_multiplier = float(difficulty["SliderMultiplier"])
@@ -296,6 +304,7 @@ def _resolve_slider_timing(start_time: int, timing_points: list[TimingPoint]) ->
     beat_length = timing_points[0].beat_length
     slider_velocity = 1.0
 
+    # 扫到物件开始时间前的最后有效 timing：红线更新 BPM，绿线更新 slider velocity。
     for point in timing_points:
         if point.time > start_time:
             break

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class TimingPoint:
+    """谱面时间点；uninherited=True 表示红线 BPM，False 表示 inherited slider velocity。"""
+
     time: float
     beat_length: float
     meter: int
@@ -19,6 +21,8 @@ class BreakPeriod:
 
 @dataclass(frozen=True)
 class StandardHitObject:
+    """standard 物件保留原始 hit_type 位标志，渲染阶段据此区分 circle、slider、spinner。"""
+
     x: int
     y: int
     start_time: int
@@ -50,12 +54,15 @@ class CatchHitObject:
 
 @dataclass(frozen=True)
 class ManiaHitObject:
+    """mania 物件只需要轨道、起止时间和是否长条，x 坐标在解析阶段已映射为 lane。"""
+
     lane: int
     start_time: int
     end_time: int
     is_long_note: bool
 
 
+# 解析器按 mode 产出不同物件，service 层统一通过 Beatmap.hit_objects 传给对应 renderer。
 HitObject = StandardHitObject | TaikoHitObject | CatchHitObject | ManiaHitObject
 
 
@@ -74,6 +81,7 @@ class Beatmap:
 
     @property
     def title(self) -> str:
+        # osu! 客户端优先展示 Unicode 标题，缺失时回退到罗马字标题。
         if "TitleUnicode" in self.metadata and self.metadata["TitleUnicode"]:
             return self.metadata["TitleUnicode"]
         return self.metadata["Title"]

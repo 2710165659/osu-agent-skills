@@ -7,13 +7,14 @@ from ..models import StandardHitObject
 
 
 def build_slider_path(hit_object: StandardHitObject) -> list[tuple[float, float]]:
-    """Approximate a standard-mode slider path in osu! playfield coordinates."""
+    """在 osu! 游玩坐标系中近似 standard slider 路径。"""
     if hit_object.slider_type is None:
         raise PreviewError("slider is missing path type")
 
     points = [(float(hit_object.x), float(hit_object.y))]
     points.extend((float(x), float(y)) for x, y in hit_object.slider_points)
 
+    # osu! 的 slider 类型：L=直线，P=三点圆弧，C=Catmull，其余按 Bezier 处理。
     if hit_object.slider_type == "L":
         path = points
     elif hit_object.slider_type == "P":
@@ -27,7 +28,7 @@ def build_slider_path(hit_object: StandardHitObject) -> list[tuple[float, float]
 
 
 def path_position_at(path: list[tuple[float, float]], progress: float) -> tuple[float, float]:
-    """Return the point at progress [0, 1] along an already approximated path."""
+    """返回近似路径上指定进度对应的坐标点。"""
     if len(path) < 2:
         return path[0]
 
@@ -55,7 +56,7 @@ def slice_path(
     start_progress: float,
     end_progress: float,
 ) -> list[tuple[float, float]]:
-    """Return the path section between two progress values in [0, 1]."""
+    """截取近似路径在两个进度值之间的片段。"""
     if len(path) < 2:
         return path
     if start_progress > end_progress:
@@ -88,6 +89,7 @@ def _approximate_bezier_segments(points: list[tuple[float, float]]) -> list[tupl
 
     for point in points[1:]:
         segment.append(point)
+        # osu! 用重复控制点切分多段 Bezier，这里遇到重复点就提交当前段。
         if len(segment) > 2 and point == segment[-2]:
             segment.pop()
             path.extend(_approximate_bezier(segment))
@@ -117,6 +119,7 @@ def _bezier_at(points: list[tuple[float, float]], t: float) -> tuple[float, floa
 
 
 def _approximate_perfect_curve(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    # Perfect curve 只有三个非共线点时才是圆弧；其它情况按 Bezier 兼容处理。
     if len(points) != 3 or _are_collinear(points[0], points[1], points[2]):
         return _approximate_bezier_segments(points)
 
@@ -151,6 +154,7 @@ def _circle_centre(
 
 
 def _normalise_arc_end(start: float, middle: float, end: float) -> float:
+    # 选择穿过中间控制点的那一段圆弧，避免走到另一侧的长弧。
     while end < start:
         end += math.tau
     middle_forward = middle
@@ -169,6 +173,7 @@ def _approximate_catmull(points: list[tuple[float, float]]) -> list[tuple[float,
         return points
 
     path: list[tuple[float, float]] = []
+    # 端点复制一次，保证首尾两段也能按 Catmull-Rom 样条计算切线。
     extended = [points[0], *points, points[-1]]
     for index in range(1, len(extended) - 2):
         p0, p1, p2, p3 = extended[index - 1], extended[index], extended[index + 1], extended[index + 2]
@@ -218,6 +223,7 @@ def _fit_path_to_length(
         if segment_length == 0:
             continue
         if travelled + segment_length >= expected_length:
+            # 在当前线段内插出终点，使近似路径长度贴合 .osu 文件记录的 pixelLength。
             ratio = (expected_length - travelled) / segment_length
             fitted.append((previous[0] + (current[0] - previous[0]) * ratio, previous[1] + (current[1] - previous[1]) * ratio))
             return fitted
@@ -228,6 +234,7 @@ def _fit_path_to_length(
     current = fitted[-1]
     segment_length = math.dist(previous, current)
     if segment_length > 0 and travelled < expected_length:
+        # 近似曲线短于期望长度时沿最后一段方向外推，匹配 osu! 对 slider 尾端的处理。
         extra = (expected_length - travelled) / segment_length
         fitted[-1] = (current[0] + (current[0] - previous[0]) * extra, current[1] + (current[1] - previous[1]) * extra)
     return fitted
