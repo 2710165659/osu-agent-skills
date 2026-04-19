@@ -94,8 +94,8 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
         ms_per_row_duration=MS_PER_ROW_DURATION,
         break_gap_ms=BREAK_GAP_MS,
     )
-    font_regular = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", TIME_LABEL_FONT_SIZE)
-    font_note = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", TIME_LABEL_NOTE_FONT_SIZE)
+    font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
+    font_note = ImageFont.load_default(size=TIME_LABEL_NOTE_FONT_SIZE)
     canvas = Image.new("RGBA", _build_canvas_size(), CANVAS_BACKGROUND_COLOR)
     draw = ImageDraw.Draw(canvas)
 
@@ -668,8 +668,8 @@ def _draw_break_overlay(
     draw = ImageDraw.Draw(layer)
     center_x = IMAGE_WIDTH / 2
     center_y = IMAGE_HEIGHT / 2
-    counter_font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", BREAK_OVERLAY_COUNTER_FONT_SIZE)
-    info_font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", BREAK_OVERLAY_INFO_FONT_SIZE)
+    counter_font = ImageFont.load_default(size=BREAK_OVERLAY_COUNTER_FONT_SIZE)
+    info_font = ImageFont.load_default(size=BREAK_OVERLAY_INFO_FONT_SIZE)
 
     _draw_break_arrows(draw, alpha)
     _draw_break_remaining_bar(draw, break_period, snapshot_time, center_x, center_y, alpha)
