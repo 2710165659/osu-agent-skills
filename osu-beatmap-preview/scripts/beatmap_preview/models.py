@@ -12,12 +12,24 @@ class TimingPoint:
 
 
 @dataclass(frozen=True)
+class BreakPeriod:
+    start_time: int
+    end_time: int
+
+
+@dataclass(frozen=True)
 class StandardHitObject:
     x: int
     y: int
     start_time: int
     end_time: int
     hit_type: int
+    new_combo: bool
+    combo_offset: int
+    slider_type: str | None = None
+    slider_points: tuple[tuple[int, int], ...] = ()
+    slider_repeats: int = 1
+    slider_pixel_length: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +66,7 @@ class Beatmap:
     general: dict[str, str]
     timing_points: list[TimingPoint]
     hit_objects: list[HitObject]
+    break_periods: list[BreakPeriod]
 
     @property
     def mode(self) -> int:

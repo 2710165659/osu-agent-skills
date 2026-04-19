@@ -5,6 +5,7 @@ from pathlib import Path
 from .errors import PreviewError
 from .models import (
     Beatmap,
+    BreakPeriod,
     CatchHitObject,
     HitObject,
     ManiaHitObject,
@@ -22,6 +23,7 @@ def parse_beatmap(beatmap_path: Path) -> Beatmap:
         difficulty = _parse_key_value_section(sections, "Difficulty")
         general = _parse_key_value_section(sections, "General")
         timing_points = _parse_timing_points(sections)
+        break_periods = _parse_break_periods(sections)
         mode = int(general["Mode"])
 
         if mode == 0:
@@ -41,6 +43,7 @@ def parse_beatmap(beatmap_path: Path) -> Beatmap:
             general=general,
             timing_points=timing_points,
             hit_objects=hit_objects,
+            break_periods=break_periods,
         )
     except Exception as exc:
         raise PreviewError("Failed to parse beatmap.") from exc
@@ -101,6 +104,24 @@ def _parse_timing_points(sections: dict[str, list[str]]) -> list[TimingPoint]:
     return sorted(timing_points, key=lambda point: (point.time, point.beat_length))
 
 
+def _parse_break_periods(sections: dict[str, list[str]]) -> list[BreakPeriod]:
+    if "Events" not in sections:
+        return []
+
+    break_periods: list[BreakPeriod] = []
+    for line in sections["Events"]:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3 or parts[0] != "2":
+            continue
+
+        start_time = int(float(parts[1]))
+        end_time = int(float(parts[2]))
+        if end_time > start_time:
+            break_periods.append(BreakPeriod(start_time=start_time, end_time=end_time))
+
+    return break_periods
+
+
 def _parse_standard_hit_objects(
     sections: dict[str, list[str]],
     difficulty: dict[str, str],
@@ -117,6 +138,22 @@ def _parse_standard_hit_objects(
         start_time = int(parts[2])
         hit_type = int(parts[3])
         end_time = _parse_object_end_time(parts, start_time, hit_type, difficulty, timing_points)
+        new_combo = bool(hit_type & 4)
+        combo_offset = (hit_type & 112) >> 4
+        slider_type = None
+        slider_points: tuple[tuple[int, int], ...] = ()
+        slider_repeats = 1
+        slider_pixel_length = 0.0
+
+        if hit_type & 2:
+            slider_parts = parts[5].split("|")
+            slider_type = slider_parts[0]
+            slider_points = tuple(
+                (int(point.split(":", 1)[0]), int(point.split(":", 1)[1]))
+                for point in slider_parts[1:]
+            )
+            slider_repeats = int(parts[6])
+            slider_pixel_length = float(parts[7])
 
         hit_objects.append(
             StandardHitObject(
@@ -125,6 +162,12 @@ def _parse_standard_hit_objects(
                 start_time=start_time,
                 end_time=end_time,
                 hit_type=hit_type,
+                new_combo=new_combo,
+                combo_offset=combo_offset,
+                slider_type=slider_type,
+                slider_points=slider_points,
+                slider_repeats=slider_repeats,
+                slider_pixel_length=slider_pixel_length,
             )
         )
 
