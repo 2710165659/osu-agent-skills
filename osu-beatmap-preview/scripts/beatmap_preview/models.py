@@ -5,12 +5,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class TimingPoint:
-    """谱面时间点；uninherited=True 表示红线 BPM，False 表示 inherited slider velocity。"""
+    """谱面时间点；同时保留红线/绿线和 kiai 开关信息。"""
 
     time: float
     beat_length: float
     meter: int
     uninherited: bool
+    kiai_mode: bool
 
 
 @dataclass(frozen=True)
@@ -46,10 +47,18 @@ class TaikoHitObject:
 
 @dataclass(frozen=True)
 class CatchHitObject:
+    """catch 顶层物件；slider / spinner 额外字段保留给渲染转换阶段使用。"""
+
     x: int
     start_time: int
     end_time: int
     hit_type: int
+    new_combo: bool
+    combo_offset: int
+    slider_type: str | None = None
+    slider_points: tuple[tuple[int, int], ...] = ()
+    slider_repeats: int = 1
+    slider_pixel_length: float = 0.0
 
 
 @dataclass(frozen=True)

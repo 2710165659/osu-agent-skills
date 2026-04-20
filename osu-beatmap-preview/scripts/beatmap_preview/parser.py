@@ -97,12 +97,15 @@ def _parse_timing_points(sections: dict[str, list[str]]) -> list[TimingPoint]:
             meter = 4
         # 第 7 列为 1 或缺失时是红线 BPM；0 则是 inherited velocity。
         uninherited = len(parts) < 7 or parts[6] == "1"
+        # 第 8 列 effects 的最低位表示 kiai 是否开启。
+        effects = int(parts[7]) if len(parts) > 7 and parts[7] else 0
         timing_points.append(
             TimingPoint(
                 time=float(parts[0]),
                 beat_length=float(parts[1]),
                 meter=meter,
                 uninherited=uninherited,
+                kiai_mode=bool(effects & 1),
             )
         )
 
@@ -223,6 +226,22 @@ def _parse_catch_hit_objects(
         start_time = int(parts[2])
         hit_type = int(parts[3])
         end_time = _parse_object_end_time(parts, start_time, hit_type, difficulty, timing_points)
+        new_combo = bool(hit_type & 4)
+        combo_offset = (hit_type & 112) >> 4
+        slider_type = None
+        slider_points: tuple[tuple[int, int], ...] = ()
+        slider_repeats = 1
+        slider_pixel_length = 0.0
+
+        if hit_type & 2:
+            slider_parts = parts[5].split("|")
+            slider_type = slider_parts[0]
+            slider_points = tuple(
+                (int(point.split(":", 1)[0]), int(point.split(":", 1)[1]))
+                for point in slider_parts[1:]
+            )
+            slider_repeats = int(parts[6])
+            slider_pixel_length = float(parts[7])
 
         hit_objects.append(
             CatchHitObject(
@@ -230,6 +249,12 @@ def _parse_catch_hit_objects(
                 start_time=start_time,
                 end_time=end_time,
                 hit_type=hit_type,
+                new_combo=new_combo,
+                combo_offset=combo_offset,
+                slider_type=slider_type,
+                slider_points=slider_points,
+                slider_repeats=slider_repeats,
+                slider_pixel_length=slider_pixel_length,
             )
         )
 
