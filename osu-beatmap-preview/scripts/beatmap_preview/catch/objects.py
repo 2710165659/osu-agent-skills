@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import struct
 from dataclasses import dataclass, replace
 
 from ..errors import PreviewError
@@ -27,6 +29,7 @@ class CatchRenderObject:
     sprite_name: str
     scale_factor: float
     rotation: float
+    event_time: float | None = None
     hyper_dash: bool = False
 
 
@@ -91,6 +94,8 @@ def build_catch_render_objects(
         raise PreviewError("catch beatmap has no hit objects")
 
     slider_tick_rate = float(beatmap.difficulty["SliderTickRate"])
+    slider_multiplier = float(beatmap.difficulty["SliderMultiplier"])
+    beatmap_format_version = int(beatmap.general.get("FormatVersion", "14"))
     render_objects: list[CatchRenderObject] = []
     rng = LegacyRandom(RNG_SEED)
 
@@ -106,6 +111,8 @@ def build_catch_render_objects(
                     index_in_beatmap=index,
                     combo_color=combo_color,
                     slider_tick_rate=slider_tick_rate,
+                    slider_multiplier=slider_multiplier,
+                    beatmap_format_version=beatmap_format_version,
                     timing_points=beatmap.timing_points,
                     rng=rng,
                 )
@@ -113,7 +120,7 @@ def build_catch_render_objects(
             continue
         render_objects.append(_build_fruit_object(hit_object.x, hit_object.start_time, index, combo_color))
 
-    return _apply_hyper_dash(render_objects, float(beatmap.difficulty["CircleSize"]))
+    return _apply_hyper_dash(_clamp_positions(render_objects), float(beatmap.difficulty["CircleSize"]))
 
 
 def _color_for_index(
@@ -131,17 +138,16 @@ def _build_banana_shower_objects(
 ) -> list[CatchRenderObject]:
     start_time = int(hit_object.start_time)
     end_time = int(hit_object.end_time)
-    spacing = float(end_time - start_time)
+    spacing = _to_float32(float(hit_object.end_time - hit_object.start_time))
 
     while spacing > 100:
-        spacing /= 2
+        spacing = _to_float32(spacing / 2)
     if spacing <= 0:
         return []
 
     bananas: list[CatchRenderObject] = []
-    banana_index = 0
-    current_time = float(start_time)
-    while current_time <= end_time + 0.001:
+    current_time = _to_float32(float(start_time))
+    while current_time <= end_time:
         x = rng.next_double() * PLAYFIELD_WIDTH
         # stable 在香蕉偏移后还会取 3 次随机数：类型、旋转、颜色。
         rng.next()
@@ -157,10 +163,10 @@ def _build_banana_shower_objects(
                 sprite_name="banana",
                 scale_factor=BANANA_SCALE,
                 rotation=_banana_rotation(int(current_time)),
+                event_time=current_time,
             )
         )
-        current_time += spacing
-        banana_index += 1
+        current_time = _to_float32(current_time + spacing)
 
     return bananas
 
@@ -170,6 +176,8 @@ def _build_juice_stream_objects(
     index_in_beatmap: int,
     combo_color: tuple[int, int, int],
     slider_tick_rate: float,
+    slider_multiplier: float,
+    beatmap_format_version: int,
     timing_points: list[TimingPoint],
     rng: LegacyRandom,
 ) -> list[CatchRenderObject]:
@@ -177,7 +185,7 @@ def _build_juice_stream_objects(
         raise PreviewError("catch slider is missing path type")
 
     path = build_slider_path(_to_standard_slider(hit_object))
-    events = _build_slider_events(hit_object, slider_tick_rate, timing_points)
+    events = _build_slider_events(hit_object, slider_tick_rate, slider_multiplier, beatmap_format_version, timing_points)
     nested_objects: list[CatchRenderObject] = []
     previous_event: SliderEvent | None = None
 
@@ -205,10 +213,11 @@ def _build_juice_stream_objects(
                     sprite_name="drop",
                     scale_factor=DROPLET_SCALE,
                     rotation=_droplet_rotation(int(round(event.time))),
+                    event_time=event.time,
                 )
             )
         elif event.event_type != "legacy_last_tick":
-            nested_objects.append(_build_fruit_object(x, int(round(event.time)), index_in_beatmap, combo_color))
+            nested_objects.append(_build_fruit_object(x, int(round(event.time)), index_in_beatmap, combo_color, event.time))
 
         previous_event = event
 
@@ -218,15 +227,17 @@ def _build_juice_stream_objects(
 def _build_slider_events(
     hit_object: CatchHitObject,
     slider_tick_rate: float,
+    slider_multiplier: float,
+    beatmap_format_version: int,
     timing_points: list[TimingPoint],
 ) -> list[SliderEvent]:
-    beat_length, _slider_velocity = _resolve_slider_timing(hit_object.start_time, timing_points)
+    beat_length, slider_velocity = _resolve_slider_timing(hit_object.start_time, timing_points)
     if slider_tick_rate <= 0:
         raise PreviewError("SliderTickRate must be positive")
 
     span_count = max(1, hit_object.slider_repeats)
-    span_duration = (hit_object.end_time - hit_object.start_time) / span_count
-    if hit_object.slider_pixel_length <= 0 or span_duration <= 0:
+    velocity = 100 * slider_multiplier / _precision_adjusted_beat_length(beat_length, slider_velocity)
+    if hit_object.slider_pixel_length <= 0 or velocity <= 0:
         return [
             SliderEvent(
                 event_type="head",
@@ -240,13 +251,14 @@ def _build_slider_events(
                 time=hit_object.end_time,
                 path_progress=1.0 if span_count % 2 == 1 else 0.0,
                 span_index=span_count - 1,
-                span_start_time=hit_object.start_time + (span_count - 1) * span_duration,
+                span_start_time=float(hit_object.end_time),
             ),
         ]
 
-    slider_multiplier = hit_object.slider_pixel_length / max(1e-6, span_duration)
-    velocity = slider_multiplier
+    span_duration = hit_object.slider_pixel_length / velocity
     scoring_distance = velocity * beat_length
+    if beatmap_format_version < 8:
+        scoring_distance /= slider_velocity
     total_distance = min(100000.0, hit_object.slider_pixel_length)
     tick_distance = min(max(0.0, scoring_distance / slider_tick_rate), total_distance)
     min_distance_from_end = velocity * 10
@@ -388,6 +400,7 @@ def _build_tiny_droplets_between(
                 sprite_name="drop",
                 scale_factor=TINY_DROPLET_SCALE,
                 rotation=_droplet_rotation(int(round(previous_event.time + offset))),
+                event_time=previous_event.time + offset,
             )
         )
         offset += time_between_tiny
@@ -435,7 +448,7 @@ def _apply_hyper_dash(
         current_object = updated_objects[current_index]
         next_object = updated_objects[next_index]
         direction = 1 if next_object.x > current_object.x else -1
-        time_to_next = int(next_object.start_time) - int(current_object.start_time) - 1000 / 60 / 4
+        time_to_next = int(_event_time(next_object)) - int(_event_time(current_object)) - 1000 / 60 / 4
         distance_to_next = abs(next_object.x - current_object.x) - (
             last_excess if last_direction == direction else half_catcher_width
         )
@@ -452,11 +465,23 @@ def _apply_hyper_dash(
     return updated_objects
 
 
+def _clamp_positions(render_objects: list[CatchRenderObject]) -> list[CatchRenderObject]:
+    return [
+        replace(catch_object, x=max(0.0, min(catch_object.x, PLAYFIELD_WIDTH)))
+        for catch_object in render_objects
+    ]
+
+
+def _event_time(catch_object: CatchRenderObject) -> float:
+    return catch_object.event_time if catch_object.event_time is not None else float(catch_object.start_time)
+
+
 def _build_fruit_object(
     x: float,
     start_time: int,
     index_in_beatmap: int,
     combo_color: tuple[int, int, int],
+    event_time: float | None = None,
 ) -> CatchRenderObject:
     fruit_name = ("pear", "grapes", "apple", "orange")[index_in_beatmap % 4]
     return CatchRenderObject(
@@ -468,13 +493,14 @@ def _build_fruit_object(
         sprite_name=fruit_name,
         scale_factor=1.0,
         rotation=_fruit_rotation(start_time),
+        event_time=event_time,
     )
 
 
 def _to_standard_slider(hit_object: CatchHitObject) -> StandardHitObject:
     return StandardHitObject(
         x=hit_object.x,
-        y=192,
+        y=hit_object.y,
         start_time=hit_object.start_time,
         end_time=hit_object.end_time,
         hit_type=hit_object.hit_type,
@@ -518,8 +544,15 @@ def _apply_timing_state(
     return beat_length, meter, -100 / point.beat_length
 
 
-def _slider_path_progress(span_index: int, local_progress: float) -> float:
-    return 1.0 - local_progress if span_index % 2 == 1 else local_progress
+def _precision_adjusted_beat_length(beat_length: float, slider_velocity: float) -> float:
+    if slider_velocity <= 0:
+        return beat_length
+    bpm_multiplier = min(max(_to_float32(100 / slider_velocity), 10), 1000) / 100
+    return beat_length * bpm_multiplier
+
+
+def _to_float32(value: float) -> float:
+    return struct.unpack("f", struct.pack("f", value))[0]
 
 
 def _banana_color(seed: int) -> tuple[int, int, int]:

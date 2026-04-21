@@ -50,6 +50,7 @@ class CatchHitObject:
     """catch 顶层物件；slider / spinner 额外字段保留给渲染转换阶段使用。"""
 
     x: int
+    y: int
     start_time: int
     end_time: int
     hit_type: int

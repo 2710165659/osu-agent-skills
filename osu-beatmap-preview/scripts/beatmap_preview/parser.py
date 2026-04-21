@@ -17,12 +17,14 @@ from .models import (
 
 def parse_beatmap(beatmap_path: Path) -> Beatmap:
     try:
-        sections = _split_sections(beatmap_path.read_text(encoding="utf-8-sig"))
+        content = beatmap_path.read_text(encoding="utf-8-sig")
+        sections = _split_sections(content)
 
         # .osu 文件把 Metadata、Difficulty 等内容拆在不同 section 中；后续解析都基于这些分组。
         metadata = _parse_key_value_section(sections, "Metadata")
         difficulty = _parse_key_value_section(sections, "Difficulty")
         general = _parse_key_value_section(sections, "General")
+        general["FormatVersion"] = str(_parse_format_version(content))
         timing_points = _parse_timing_points(sections)
         break_periods = _parse_break_periods(sections)
         mode = int(general["Mode"])
@@ -72,6 +74,14 @@ def _split_sections(content: str) -> dict[str, list[str]]:
         sections[current_section].append(line)
 
     return sections
+
+
+def _parse_format_version(content: str) -> int:
+    lines = content.splitlines()
+    first_line = lines[0].strip() if lines else ""
+    if first_line.startswith("osu file format v"):
+        return int(first_line.rsplit("v", 1)[1])
+    return 14
 
 
 def _parse_key_value_section(sections: dict[str, list[str]], section_name: str) -> dict[str, str]:
@@ -223,6 +233,7 @@ def _parse_catch_hit_objects(
             continue
 
         x = int(parts[0])
+        y = int(parts[1])
         start_time = int(parts[2])
         hit_type = int(parts[3])
         end_time = _parse_object_end_time(parts, start_time, hit_type, difficulty, timing_points)
@@ -246,6 +257,7 @@ def _parse_catch_hit_objects(
         hit_objects.append(
             CatchHitObject(
                 x=x,
+                y=y,
                 start_time=start_time,
                 end_time=end_time,
                 hit_type=hit_type,
