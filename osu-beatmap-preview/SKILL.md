@@ -5,11 +5,21 @@ description: Generate an osu! beatmap preview image and JSON result from a beatm
 
 # osu! Beatmap Preview
 
+Prefer absolute paths for command paths when running from automation or another working directory. The examples below use relative paths from the skill root.
+
 Run the skill from the skill root:
 
 ```bash
 python scripts/run.py --bid="5199917"
 ```
+
+Validate the environment and core preview workflow from the skill root:
+
+```bash
+python scripts/validate.py
+```
+
+`validate.py` checks required imports, temp-directory read/write access, network access to the osu! beatmap download endpoint, and a render test for beatmap `2116202`. It prints a summary and exits with code `0` on success or `1` on failure.
 
 Use this skill when you need:
 

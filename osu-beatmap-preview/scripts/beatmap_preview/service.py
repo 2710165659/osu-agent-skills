@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 
 from .downloader import download_beatmap_file
@@ -18,10 +19,11 @@ def generate_preview(bid: str, skill_root: Path) -> dict[str, object]:
     if not bid.isdigit():
         raise PreviewError("bid must be numeric")
 
-    beatmap_path = download_beatmap_file(bid=bid, temp_dir=skill_root / "temp")
+    temp_root = Path(tempfile.gettempdir()) / "osu-beatmap-preview"
+    beatmap_path = download_beatmap_file(bid=bid, temp_dir=temp_root / "osu-download-cache")
     beatmap = parse_beatmap(beatmap_path)
 
-    output_path = skill_root / "outputs" / f"{bid}.png"
+    output_path = temp_root / "outputs" / f"{bid}.png"
     preview_path = _render_preview_for_mode(beatmap, output_path)
 
     return {
