@@ -18,30 +18,37 @@ from .config import (
     BREAK_OVERLAY_INFO_TOP_GAP,
     BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE,
     CANVAS_BACKGROUND_COLOR,
+    GIF_DURATION_MS,
+    GIF_FPS,
+    GIF_GRID_GAP,
+    GIF_IMAGES_PER_ROW,
+    GIF_LOOP,
+    GIF_ROW_COUNT,
     HORIZONTAL_PAGE_MARGIN,
     IMAGE_BACKGROUND_COLOR,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
-    IMAGES_PER_ROW,
     INTER_ROW_GAP,
     INTRA_ROW_IMAGE_GAP,
     LEFT_PANEL_BACKGROUND_COLOR,
     LEFT_PANEL_WIDTH,
-    MS_PER_ROW_DURATION,
     OBJECT_RADIUS,
     PLAYFIELD_HEIGHT,
     PLAYFIELD_STORYBOARD_SHIFT,
     PLAYFIELD_VIEWPORT_RATIO,
     PLAYFIELD_WIDTH,
     POST_HIT_FADE_MS,
+    PNG_IMAGES_PER_ROW,
+    PNG_MS_PER_IMAGE,
+    PNG_ROW_COUNT,
     PREVIEW_TIME_LABEL_COLOR,
-    ROW_COUNT,
     SLIDER_BODY_SUPERSAMPLE,
     SLIDER_BORDER_WIDTH,
     SLIDER_FADE_OUT_MS,
     SLIDER_LEGACY_BORDER_PORTION,
     SLIDER_LEGACY_SHADOW_ALPHA,
     SLIDER_LEGACY_TRACK_ALPHA,
+    STANDARD_OUTPUT_FORMAT,
     SNAKING_IN_SLIDERS,
     SNAKING_OUT_SLIDERS,
     SPINNER_FADE_OUT_MS,
@@ -80,6 +87,10 @@ class RenderSettings:
     fade_in_ms: float
 
 
+def get_standard_output_extension() -> str:
+    return f".{_get_standard_output_format()}"
+
+
 def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> Image.Image:
     """把 osu!standard 谱面渲染为多行游玩截图网格。"""
     skin = load_standard_skin()
@@ -89,14 +100,14 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
     row_timings = choose_row_start_times(
         beatmap=beatmap,
         hit_objects=hit_objects,
-        row_count=ROW_COUNT,
-        images_per_row=IMAGES_PER_ROW,
-        ms_per_row_duration=MS_PER_ROW_DURATION,
+        row_count=PNG_ROW_COUNT,
+        images_per_row=PNG_IMAGES_PER_ROW,
+        ms_per_row_duration=PNG_MS_PER_IMAGE,
         break_gap_ms=BREAK_GAP_MS,
     )
     font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
     font_note = ImageFont.load_default(size=TIME_LABEL_NOTE_FONT_SIZE)
-    canvas = Image.new("RGBA", _build_canvas_size(), CANVAS_BACKGROUND_COLOR)
+    canvas = Image.new("RGBA", _build_png_canvas_size(), CANVAS_BACKGROUND_COLOR)
     draw = ImageDraw.Draw(canvas)
 
     # 每一行是一段时间窗口，行内多张截图按固定间隔向后推进。
@@ -104,8 +115,8 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
         y = VERTICAL_PAGE_MARGIN + row_index * (
             IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT + INTER_ROW_GAP
         )
-        for image_index in range(IMAGES_PER_ROW):
-            snapshot_time = row_timing.start_time + image_index * MS_PER_ROW_DURATION
+        for image_index in range(PNG_IMAGES_PER_ROW):
+            snapshot_time = row_timing.start_time + image_index * PNG_MS_PER_IMAGE
             x = HORIZONTAL_PAGE_MARGIN + image_index * (IMAGE_WIDTH + INTRA_ROW_IMAGE_GAP)
             frame = _render_frame(
                 hit_objects=hit_objects,
@@ -132,6 +143,64 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
             )
 
     return canvas
+
+
+def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple[list[Image.Image], int, int]:
+    """把 osu!standard 谱面渲染为带时间段标签的 2x2 GIF 帧序列。"""
+    skin = load_standard_skin()
+    settings = _build_render_settings(beatmap)
+    frame_layout = _build_frame_layout()
+    combo_info = _build_combo_info(hit_objects, skin.combo_colors)
+    row_timings = choose_row_start_times(
+        beatmap=beatmap,
+        hit_objects=hit_objects,
+        row_count=GIF_ROW_COUNT * GIF_IMAGES_PER_ROW,
+        images_per_row=2,
+        ms_per_row_duration=GIF_DURATION_MS,
+        break_gap_ms=BREAK_GAP_MS,
+    )
+    font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
+    font_note = ImageFont.load_default(size=TIME_LABEL_NOTE_FONT_SIZE)
+    canvas_size = _build_gif_canvas_size()
+    frame_count = max(1, round(GIF_DURATION_MS * GIF_FPS / 1000))
+    frame_duration_ms = max(1, round(1000 / GIF_FPS))
+    frames: list[Image.Image] = []
+
+    for frame_index in range(frame_count):
+        elapsed_ms = round(frame_index * 1000 / GIF_FPS)
+        canvas = Image.new("RGBA", canvas_size, CANVAS_BACKGROUND_COLOR)
+        draw = ImageDraw.Draw(canvas)
+
+        for segment_index, row_timing in enumerate(row_timings):
+            x, y = _gif_frame_origin(segment_index)
+            snapshot_time = row_timing.start_time + elapsed_ms
+            frame = _render_frame(
+                hit_objects=hit_objects,
+                combo_info=combo_info,
+                skin=skin,
+                settings=settings,
+                frame_layout=frame_layout,
+                snapshot_time=snapshot_time,
+                break_periods=row_timing.break_periods if row_timing.is_preview else (),
+            )
+            canvas.alpha_composite(frame, (x, y))
+            note = _build_time_label_note(row_timing)
+            is_preview_label = row_timing.is_preview
+            _draw_time_label(
+                draw,
+                _build_gif_time_label(row_timing.start_time),
+                x,
+                y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
+                font_regular,
+                font_note,
+                note,
+                PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_COLOR,
+                PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_NOTE_COLOR,
+            )
+
+        frames.append(canvas)
+
+    return frames, frame_duration_ms, GIF_LOOP
 
 
 def _build_render_settings(beatmap: Beatmap) -> RenderSettings:
@@ -172,11 +241,35 @@ def _build_frame_layout() -> FrameLayout:
     )
 
 
-def _build_canvas_size() -> tuple[int, int]:
-    width = HORIZONTAL_PAGE_MARGIN * 2 + IMAGES_PER_ROW * IMAGE_WIDTH + (IMAGES_PER_ROW - 1) * INTRA_ROW_IMAGE_GAP
+def _build_png_canvas_size() -> tuple[int, int]:
+    width = (
+        HORIZONTAL_PAGE_MARGIN * 2
+        + PNG_IMAGES_PER_ROW * IMAGE_WIDTH
+        + (PNG_IMAGES_PER_ROW - 1) * INTRA_ROW_IMAGE_GAP
+    )
     row_height = IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
-    height = VERTICAL_PAGE_MARGIN * 2 + ROW_COUNT * row_height + (ROW_COUNT - 1) * INTER_ROW_GAP
+    height = VERTICAL_PAGE_MARGIN * 2 + PNG_ROW_COUNT * row_height + (PNG_ROW_COUNT - 1) * INTER_ROW_GAP
     return width, height
+
+
+def _build_gif_canvas_size() -> tuple[int, int]:
+    row_height = IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
+    width = (
+        HORIZONTAL_PAGE_MARGIN * 2
+        + GIF_IMAGES_PER_ROW * IMAGE_WIDTH
+        + (GIF_IMAGES_PER_ROW - 1) * GIF_GRID_GAP
+    )
+    height = VERTICAL_PAGE_MARGIN * 2 + GIF_ROW_COUNT * row_height + (GIF_ROW_COUNT - 1) * GIF_GRID_GAP
+    return width, height
+
+
+def _gif_frame_origin(segment_index: int) -> tuple[int, int]:
+    row_index = segment_index // GIF_IMAGES_PER_ROW
+    image_index = segment_index % GIF_IMAGES_PER_ROW
+    row_height = IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
+    x = HORIZONTAL_PAGE_MARGIN + image_index * (IMAGE_WIDTH + GIF_GRID_GAP)
+    y = VERTICAL_PAGE_MARGIN + row_index * (row_height + GIF_GRID_GAP)
+    return x, y
 
 
 def _build_combo_info(
@@ -651,6 +744,11 @@ def _build_time_label_note(row_timing: RowTiming) -> str | None:
     return "Preview Time"
 
 
+def _build_gif_time_label(start_time: int) -> str:
+    end_time = start_time + GIF_DURATION_MS
+    return f"{_format_time(start_time)} - {_format_time(end_time)}"
+
+
 def _current_break_period(
     break_periods: tuple[BreakPeriod, ...],
     snapshot_time: int,
@@ -772,6 +870,12 @@ def _format_time(time_ms: int) -> str:
     seconds = (time_ms % 60000) // 1000
     milliseconds = time_ms % 1000
     return f"{minutes:02d}:{seconds:02d}:{milliseconds:03d}"
+
+
+def _get_standard_output_format() -> str:
+    if STANDARD_OUTPUT_FORMAT not in {"png", "gif"}:
+        raise ValueError('STANDARD_OUTPUT_FORMAT must be "png" or "gif"')
+    return STANDARD_OUTPUT_FORMAT
 
 
 def _is_slider(hit_object: StandardHitObject) -> bool:

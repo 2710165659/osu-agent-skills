@@ -12,6 +12,7 @@ from .renderer_catch import render_catch_preview
 from .renderer_mania import render_mania_preview
 from .renderer_standard import render_standard_preview
 from .renderer_taiko import render_taiko_preview
+from .standard import get_standard_output_extension
 
 
 def generate_preview(bid: str, skill_root: Path) -> dict[str, object]:
@@ -23,7 +24,7 @@ def generate_preview(bid: str, skill_root: Path) -> dict[str, object]:
     beatmap_path = download_beatmap_file(bid=bid, temp_dir=temp_root / "osu-download-cache")
     beatmap = parse_beatmap(beatmap_path)
 
-    output_path = temp_root / "outputs" / f"{bid}.png"
+    output_path = temp_root / "outputs" / _build_output_filename(beatmap, bid)
     preview_path = _render_preview_for_mode(beatmap, output_path)
 
     return {
@@ -60,3 +61,9 @@ def _render_preview_for_mode(beatmap: Beatmap, output_path: Path) -> Path:
     if beatmap.mode == 3:
         return render_mania_preview(beatmap, output_path)
     raise PreviewError(f"unsupported beatmap mode: {beatmap.mode}")
+
+
+def _build_output_filename(beatmap: Beatmap, bid: str) -> str:
+    if beatmap.mode == 0:
+        return f"{bid}{get_standard_output_extension()}"
+    return f"{bid}.png"

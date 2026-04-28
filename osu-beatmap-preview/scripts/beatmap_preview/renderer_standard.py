@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .errors import PreviewError
 from .models import Beatmap, StandardHitObject
-from .standard import render_standard_grid
+from .standard import get_standard_output_extension, render_standard_gif, render_standard_grid
 
 
 def render_standard_preview(beatmap: Beatmap, output_path: Path) -> Path:
@@ -14,9 +14,22 @@ def render_standard_preview(beatmap: Beatmap, output_path: Path) -> Path:
         if not hit_objects:
             raise PreviewError("standard beatmap has no hit objects")
 
-        image = render_standard_grid(beatmap, hit_objects)
+        output_path = output_path.with_suffix(get_standard_output_extension())
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        image.save(output_path)
+        if output_path.suffix == ".gif":
+            frames, frame_duration_ms, loop = render_standard_gif(beatmap, hit_objects)
+            frames[0].save(
+                output_path,
+                save_all=True,
+                append_images=frames[1:],
+                duration=frame_duration_ms,
+                loop=loop,
+                optimize=True,
+                disposal=2,
+            )
+        else:
+            image = render_standard_grid(beatmap, hit_objects)
+            image.save(output_path)
         return output_path
     except PreviewError:
         raise

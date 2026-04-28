@@ -159,9 +159,13 @@ def validate_render_preview():
         )
 
     temp_root = get_temp_root()
-    preview_path = temp_root / "outputs" / f"{TEST_BID}.png"
+    preview_path = None
+    preview_candidates = (
+        temp_root / "outputs" / f"{TEST_BID}.png",
+        temp_root / "outputs" / f"{TEST_BID}.gif",
+    )
     beatmap_path = temp_root / "osu-download-cache" / f"{TEST_BID}.osu"
-    cleanup_render_preview_outputs(preview_path, beatmap_path)
+    cleanup_render_preview_outputs(*preview_candidates, beatmap_path)
 
     try:
         result = generate_preview(TEST_BID, get_skill_root())
@@ -207,7 +211,7 @@ def validate_render_preview():
             message=f"failed to validate preview output for bid {TEST_BID}: {exc}",
         )
     finally:
-        cleanup_render_preview_outputs(preview_path, beatmap_path)
+        cleanup_render_preview_outputs(*preview_candidates, preview_path, beatmap_path)
 
     return ValidationResult(
         name="Preview render",
@@ -219,8 +223,8 @@ def validate_render_preview():
     )
 
 
-def cleanup_render_preview_outputs(preview_path, beatmap_path):
-    for path in (preview_path, beatmap_path):
+def cleanup_render_preview_outputs(*paths):
+    for path in paths:
         if path is None:
             continue
         try:

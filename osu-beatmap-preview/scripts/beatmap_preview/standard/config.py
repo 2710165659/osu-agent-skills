@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-MS_PER_ROW_DURATION = 400  # 一行内两张图片的时间间隔(ms)
-ROW_COUNT = 5  # 行的数量
-IMAGES_PER_ROW = 8  # 每行内图片数量
+STANDARD_OUTPUT_FORMAT = "gif"  # standard 输出格式，可选 "png" 或 "gif"
+
+#region png相关
+PNG_MS_PER_IMAGE = 400  # 一行内两张 PNG 图片的时间间隔(ms)
+PNG_ROW_COUNT = 5  # PNG 行数
+PNG_IMAGES_PER_ROW = 8  # PNG 每行图片数量
+#endregion
+
+#region gif相关
+GIF_ROW_COUNT = 2  # GIF 行数
+GIF_IMAGES_PER_ROW = 2  # GIF 每行图片数量
+GIF_DURATION_MS = 5000  # GIF 每个时间段的播放时长(ms)
+GIF_FPS = 15  # GIF 帧率
+GIF_LOOP = 0  # GIF 循环次数，0 表示无限循环
+GIF_GRID_GAP = 20  # GIF 宫格间距
+#endregion
+
 IMAGE_WIDTH = 512  # 每张预览图片宽度
 IMAGE_HEIGHT = 384  # 每张预览图片高度
 HORIZONTAL_PAGE_MARGIN = 20  # 图片左右外边距
