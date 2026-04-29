@@ -1,12 +1,81 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
+from dataclasses import dataclass
+from functools import lru_cache
 
 from ..errors import PreviewError
 from ..models import StandardHitObject
 
 
-def build_slider_path(hit_object: StandardHitObject) -> list[tuple[float, float]]:
+@dataclass(frozen=True)
+class SliderPath:
+    points: tuple[tuple[float, float], ...]
+    cumulative_lengths: tuple[float, ...]
+    total_length: float
+
+
+def build_slider_path(hit_object: StandardHitObject) -> SliderPath:
+    return _build_slider_path_cached(hit_object)
+
+
+def build_path(points: list[tuple[float, float]] | tuple[tuple[float, float], ...]) -> SliderPath:
+    deduped = _dedupe_points(list(points))
+    if not deduped:
+        return SliderPath(points=(), cumulative_lengths=(), total_length=0.0)
+
+    cumulative_lengths = [0.0]
+    travelled = 0.0
+    for index in range(1, len(deduped)):
+        travelled += math.dist(deduped[index - 1], deduped[index])
+        cumulative_lengths.append(travelled)
+
+    return SliderPath(
+        points=tuple(deduped),
+        cumulative_lengths=tuple(cumulative_lengths),
+        total_length=travelled,
+    )
+
+
+def path_position_at(path: SliderPath, progress: float) -> tuple[float, float]:
+    """返回近似路径上指定进度对应的坐标点。"""
+    if not path.points:
+        raise PreviewError("slider path has no points")
+    if len(path.points) < 2 or path.total_length <= 0:
+        return path.points[0]
+
+    target = path.total_length * max(0.0, min(1.0, progress))
+    return _path_position_at_distance(path, target)
+
+
+def slice_path(
+    path: SliderPath,
+    start_progress: float,
+    end_progress: float,
+) -> list[tuple[float, float]]:
+    """截取近似路径在两个进度值之间的片段。"""
+    if len(path.points) < 2 or path.total_length <= 0:
+        return list(path.points)
+    if start_progress > end_progress:
+        start_progress, end_progress = end_progress, start_progress
+
+    start_progress = max(0.0, min(1.0, start_progress))
+    end_progress = max(0.0, min(1.0, end_progress))
+    start_distance = path.total_length * start_progress
+    end_distance = path.total_length * end_progress
+    sliced = [_path_position_at_distance(path, start_distance)]
+
+    for index, distance in enumerate(path.cumulative_lengths[1:-1], start=1):
+        if start_distance < distance < end_distance:
+            sliced.append(path.points[index])
+
+    sliced.append(_path_position_at_distance(path, end_distance))
+    return _dedupe_points(sliced)
+
+
+@lru_cache(maxsize=None)
+def _build_slider_path_cached(hit_object: StandardHitObject) -> SliderPath:
     """在 osu! 游玩坐标系中近似 standard slider 路径。"""
     if hit_object.slider_type is None:
         raise PreviewError("slider is missing path type")
@@ -24,63 +93,29 @@ def build_slider_path(hit_object: StandardHitObject) -> list[tuple[float, float]
     else:
         path = _approximate_bezier_segments(points)
 
-    return _fit_path_to_length(path, hit_object.slider_pixel_length)
+    return build_path(_fit_path_to_length(path, hit_object.slider_pixel_length))
 
 
-def path_position_at(path: list[tuple[float, float]], progress: float) -> tuple[float, float]:
-    """返回近似路径上指定进度对应的坐标点。"""
-    if len(path) < 2:
-        return path[0]
+def _path_position_at_distance(path: SliderPath, target: float) -> tuple[float, float]:
+    if target <= 0:
+        return path.points[0]
+    if target >= path.total_length:
+        return path.points[-1]
 
-    target = _path_length(path) * max(0.0, min(1.0, progress))
-    travelled = 0.0
-    for index in range(1, len(path)):
-        previous = path[index - 1]
-        current = path[index]
-        segment_length = math.dist(previous, current)
-        if segment_length == 0:
-            continue
-        if travelled + segment_length >= target:
-            ratio = (target - travelled) / segment_length
-            return (
-                previous[0] + (current[0] - previous[0]) * ratio,
-                previous[1] + (current[1] - previous[1]) * ratio,
-            )
-        travelled += segment_length
+    index = bisect_right(path.cumulative_lengths, target)
+    previous_index = max(0, index - 1)
+    next_index = min(len(path.points) - 1, index)
+    previous = path.points[previous_index]
+    current = path.points[next_index]
+    segment_length = path.cumulative_lengths[next_index] - path.cumulative_lengths[previous_index]
+    if segment_length <= 0:
+        return current
 
-    return path[-1]
-
-
-def slice_path(
-    path: list[tuple[float, float]],
-    start_progress: float,
-    end_progress: float,
-) -> list[tuple[float, float]]:
-    """截取近似路径在两个进度值之间的片段。"""
-    if len(path) < 2:
-        return path
-    if start_progress > end_progress:
-        start_progress, end_progress = end_progress, start_progress
-
-    start_progress = max(0.0, min(1.0, start_progress))
-    end_progress = max(0.0, min(1.0, end_progress))
-    start_distance = _path_length(path) * start_progress
-    end_distance = _path_length(path) * end_progress
-    sliced = [path_position_at(path, start_progress)]
-    travelled = 0.0
-
-    for index in range(1, len(path)):
-        current_distance = travelled + math.dist(path[index - 1], path[index])
-        if start_distance < current_distance < end_distance:
-            sliced.append(path[index])
-        travelled = current_distance
-
-    sliced.append(path_position_at(path, end_progress))
-    return _dedupe_points(sliced)
-
-
-def _path_length(path: list[tuple[float, float]]) -> float:
-    return sum(math.dist(path[index - 1], path[index]) for index in range(1, len(path)))
+    ratio = (target - path.cumulative_lengths[previous_index]) / segment_length
+    return (
+        previous[0] + (current[0] - previous[0]) * ratio,
+        previous[1] + (current[1] - previous[1]) * ratio,
+    )
 
 
 def _approximate_bezier_segments(points: list[tuple[float, float]]) -> list[tuple[float, float]]:

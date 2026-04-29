@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageFont
@@ -63,7 +64,7 @@ from .config import (
 )
 from .row_selection import RowTiming, choose_row_start_times
 from .skin import StandardSkin, load_standard_skin
-from .slider_path import build_slider_path, path_position_at, slice_path
+from .slider_path import SliderPath, build_path, build_slider_path, path_position_at, slice_path
 
 
 @dataclass(frozen=True)
@@ -87,16 +88,63 @@ class RenderSettings:
     fade_in_ms: float
 
 
+@dataclass(frozen=True)
+class SliderRenderData:
+    world_path: SliderPath
+    frame_path: SliderPath
+    head_center: tuple[float, float]
+    reverse_centers: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class CachedLayer:
+    image: Image.Image
+    offset: tuple[int, int]
+
+
+@dataclass
+class RenderCache:
+    resized_alpha: dict[tuple[int, tuple[int, int], int], Image.Image]
+    tinted: dict[tuple[int, tuple[int, int], tuple[int, int, int], int], Image.Image]
+    digit_crops: dict[int, Image.Image]
+    slider_data: dict[StandardHitObject, SliderRenderData]
+    slider_body_layers: dict[
+        tuple[StandardHitObject, int, int, tuple[int, int, int], tuple[int, int, int]],
+        CachedLayer,
+    ]
+    slider_body_alpha_layers: dict[
+        tuple[
+            tuple[StandardHitObject, int, int, tuple[int, int, int], tuple[int, int, int]],
+            int,
+        ],
+        Image.Image,
+    ]
+
+
+@dataclass(frozen=True)
+class RenderContext:
+    hit_objects: list[StandardHitObject]
+    combo_info: dict[int, ComboInfo]
+    skin: StandardSkin
+    settings: RenderSettings
+    frame_layout: FrameLayout
+    frame_circle_diameter: int
+    slider_body_width: int
+    slider_border_width: int
+    spinner_size: int
+    reverse_arrow_size: int
+    slider_follow_size: int
+    slider_ball_size: int
+    cache: RenderCache
+
+
 def get_standard_output_extension() -> str:
     return f".{_get_standard_output_format()}"
 
 
 def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> Image.Image:
     """把 osu!standard 谱面渲染为多行游玩截图网格。"""
-    skin = load_standard_skin()
-    settings = _build_render_settings(beatmap)
-    frame_layout = _build_frame_layout()
-    combo_info = _build_combo_info(hit_objects, skin.combo_colors)
+    context = _build_render_context(beatmap, hit_objects)
     row_timings = choose_row_start_times(
         beatmap=beatmap,
         hit_objects=hit_objects,
@@ -112,20 +160,19 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
 
     # 每一行是一段时间窗口，行内多张截图按固定间隔向后推进。
     for row_index, row_timing in enumerate(row_timings):
+        snapshot_times = tuple(row_timing.start_time + image_index * PNG_MS_PER_IMAGE for image_index in range(PNG_IMAGES_PER_ROW))
+        visible_index_groups = _build_visible_indexes_by_snapshot(hit_objects, snapshot_times, context.settings.preempt_ms)
         y = VERTICAL_PAGE_MARGIN + row_index * (
             IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT + INTER_ROW_GAP
         )
         for image_index in range(PNG_IMAGES_PER_ROW):
-            snapshot_time = row_timing.start_time + image_index * PNG_MS_PER_IMAGE
+            snapshot_time = snapshot_times[image_index]
             x = HORIZONTAL_PAGE_MARGIN + image_index * (IMAGE_WIDTH + INTRA_ROW_IMAGE_GAP)
             frame = _render_frame(
-                hit_objects=hit_objects,
-                combo_info=combo_info,
-                skin=skin,
-                settings=settings,
-                frame_layout=frame_layout,
+                context=context,
                 snapshot_time=snapshot_time,
                 break_periods=row_timing.break_periods if row_timing.is_preview else (),
+                visible_indexes=visible_index_groups[image_index],
             )
             canvas.alpha_composite(frame, (x, y))
             note = _build_time_label_note(row_timing) if image_index == 0 else None
@@ -147,10 +194,7 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
 
 def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple[list[Image.Image], int, int]:
     """把 osu!standard 谱面渲染为带时间段标签的 2x2 GIF 帧序列。"""
-    skin = load_standard_skin()
-    settings = _build_render_settings(beatmap)
-    frame_layout = _build_frame_layout()
-    combo_info = _build_combo_info(hit_objects, skin.combo_colors)
+    context = _build_render_context(beatmap, hit_objects)
     row_timings = choose_row_start_times(
         beatmap=beatmap,
         hit_objects=hit_objects,
@@ -165,23 +209,27 @@ def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) 
     frame_count = max(1, round(GIF_DURATION_MS * GIF_FPS / 1000))
     frame_duration_ms = max(1, round(1000 / GIF_FPS))
     frames: list[Image.Image] = []
+    segment_snapshot_times = [
+        tuple(row_timing.start_time + round(frame_index * 1000 / GIF_FPS) for frame_index in range(frame_count))
+        for row_timing in row_timings
+    ]
+    segment_visible_indexes = [
+        _build_visible_indexes_by_snapshot(hit_objects, snapshot_times, context.settings.preempt_ms)
+        for snapshot_times in segment_snapshot_times
+    ]
 
     for frame_index in range(frame_count):
-        elapsed_ms = round(frame_index * 1000 / GIF_FPS)
         canvas = Image.new("RGBA", canvas_size, CANVAS_BACKGROUND_COLOR)
         draw = ImageDraw.Draw(canvas)
 
         for segment_index, row_timing in enumerate(row_timings):
             x, y = _gif_frame_origin(segment_index)
-            snapshot_time = row_timing.start_time + elapsed_ms
+            snapshot_time = segment_snapshot_times[segment_index][frame_index]
             frame = _render_frame(
-                hit_objects=hit_objects,
-                combo_info=combo_info,
-                skin=skin,
-                settings=settings,
-                frame_layout=frame_layout,
+                context=context,
                 snapshot_time=snapshot_time,
                 break_periods=row_timing.break_periods if row_timing.is_preview else (),
+                visible_indexes=segment_visible_indexes[segment_index][frame_index],
             )
             canvas.alpha_composite(frame, (x, y))
             note = _build_time_label_note(row_timing)
@@ -201,6 +249,64 @@ def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) 
         frames.append(canvas)
 
     return frames, frame_duration_ms, GIF_LOOP
+
+
+def _build_render_context(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> RenderContext:
+    skin = load_standard_skin()
+    settings = _build_render_settings(beatmap)
+    frame_layout = _build_frame_layout()
+    combo_info = _build_combo_info(hit_objects, skin.combo_colors)
+    frame_circle_diameter = max(1, round(settings.circle_diameter * frame_layout.scale))
+    return RenderContext(
+        hit_objects=hit_objects,
+        combo_info=combo_info,
+        skin=skin,
+        settings=settings,
+        frame_layout=frame_layout,
+        frame_circle_diameter=frame_circle_diameter,
+        slider_body_width=frame_circle_diameter,
+        slider_border_width=max(1, round(SLIDER_BORDER_WIDTH * frame_layout.scale)),
+        spinner_size=max(1, round(min(PLAYFIELD_WIDTH, PLAYFIELD_HEIGHT) * 0.95 * frame_layout.scale)),
+        reverse_arrow_size=max(1, round(settings.circle_diameter * 0.78 * frame_layout.scale)),
+        slider_follow_size=max(1, round(settings.circle_diameter * 2.4 * frame_layout.scale)),
+        slider_ball_size=max(1, round(settings.circle_diameter * 1.15 * frame_layout.scale)),
+        cache=RenderCache(
+            resized_alpha={},
+            tinted={},
+            digit_crops={},
+            slider_data={},
+            slider_body_layers={},
+            slider_body_alpha_layers={},
+        ),
+    )
+
+
+def _build_visible_indexes_by_snapshot(
+    hit_objects: list[StandardHitObject],
+    snapshot_times: tuple[int, ...],
+    preempt_ms: int,
+) -> tuple[tuple[int, ...], ...]:
+    visible_starts = sorted(
+        (hit_object.start_time - preempt_ms, index) for index, hit_object in enumerate(hit_objects)
+    )
+    visible_ends = sorted((_visible_end_time(hit_object), index) for index, hit_object in enumerate(hit_objects))
+    active_indexes: list[int] = []
+    start_pointer = 0
+    end_pointer = 0
+    visible_groups: list[tuple[int, ...]] = []
+
+    for snapshot_time in snapshot_times:
+        while start_pointer < len(visible_starts) and visible_starts[start_pointer][0] <= snapshot_time:
+            active_indexes.append(visible_starts[start_pointer][1])
+            start_pointer += 1
+        while end_pointer < len(visible_ends) and visible_ends[end_pointer][0] < snapshot_time:
+            ended_index = visible_ends[end_pointer][1]
+            if ended_index in active_indexes:
+                active_indexes.remove(ended_index)
+            end_pointer += 1
+        visible_groups.append(tuple(reversed(active_indexes)))
+
+    return tuple(visible_groups)
 
 
 def _build_render_settings(beatmap: Beatmap) -> RenderSettings:
@@ -298,46 +404,42 @@ def _build_combo_info(
 
 
 def _render_frame(
-    hit_objects: list[StandardHitObject],
-    combo_info: dict[int, ComboInfo],
-    skin: StandardSkin,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
+    context: RenderContext,
     snapshot_time: int,
     break_periods: tuple[BreakPeriod, ...],
+    visible_indexes: tuple[int, ...] | None = None,
 ) -> Image.Image:
     frame = Image.new("RGBA", (IMAGE_WIDTH, IMAGE_HEIGHT), IMAGE_BACKGROUND_COLOR)
     draw = ImageDraw.Draw(frame)
     draw.rectangle((0, 0, LEFT_PANEL_WIDTH, IMAGE_HEIGHT), fill=LEFT_PANEL_BACKGROUND_COLOR)
 
-    visible_indexes = [
-        index
-        for index, hit_object in enumerate(hit_objects)
-        if _is_visible(hit_object, snapshot_time, settings.preempt_ms)
-    ]
+    if visible_indexes is None:
+        visible_indexes = tuple(
+            index
+            for index, hit_object in enumerate(context.hit_objects)
+            if _is_visible(hit_object, snapshot_time, context.settings.preempt_ms)
+        )
 
     # 后出现的物件先绘制，保证当前最接近击打的物件位于上层。
-    for index in sorted(visible_indexes, key=lambda item: hit_objects[item].start_time, reverse=True):
-        hit_object = hit_objects[index]
-        combo = combo_info[index]
+    for index in visible_indexes:
+        hit_object = context.hit_objects[index]
+        combo = context.combo_info[index]
         if _is_spinner(hit_object):
-            _draw_spinner(frame, skin, hit_object, snapshot_time, settings, frame_layout)
+            _draw_spinner(frame, context, hit_object, snapshot_time)
         elif _is_slider(hit_object):
-            _draw_slider(frame, skin, hit_object, combo, snapshot_time, settings, frame_layout)
+            _draw_slider(frame, context, hit_object, combo, snapshot_time)
         else:
-            _draw_hit_circle(frame, skin, hit_object, combo, snapshot_time, settings, frame_layout)
+            _draw_hit_circle(frame, context, hit_object, combo, snapshot_time)
 
-    for index in sorted(visible_indexes, key=lambda item: hit_objects[item].start_time, reverse=True):
-        hit_object = hit_objects[index]
+    for index in visible_indexes:
+        hit_object = context.hit_objects[index]
         if not _is_spinner(hit_object):
             _draw_approach_circle(
                 frame,
-                skin,
+                context,
                 hit_object,
-                combo_info[index].color,
+                context.combo_info[index].color,
                 snapshot_time,
-                settings,
-                frame_layout,
             )
 
     current_break = _current_break_period(break_periods, snapshot_time)
@@ -349,53 +451,67 @@ def _render_frame(
 
 def _is_visible(hit_object: StandardHitObject, snapshot_time: int, preempt_ms: int) -> bool:
     lifetime_start = hit_object.start_time - preempt_ms
-    if _is_slider(hit_object):
-        lifetime_end = hit_object.end_time + SLIDER_FADE_OUT_MS
-    elif _is_spinner(hit_object):
-        lifetime_end = hit_object.end_time + SPINNER_FADE_OUT_MS
-    else:
-        lifetime_end = hit_object.start_time + POST_HIT_FADE_MS
+    lifetime_end = _visible_end_time(hit_object)
     return lifetime_start <= snapshot_time <= lifetime_end
+
+
+def _visible_end_time(hit_object: StandardHitObject) -> int:
+    if _is_slider(hit_object):
+        return hit_object.end_time + SLIDER_FADE_OUT_MS
+    if _is_spinner(hit_object):
+        return hit_object.end_time + SPINNER_FADE_OUT_MS
+    return hit_object.start_time + POST_HIT_FADE_MS
 
 
 def _draw_hit_circle(
     frame: Image.Image,
-    skin: StandardSkin,
+    context: RenderContext,
     hit_object: StandardHitObject,
     combo: ComboInfo,
     snapshot_time: int,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
 ) -> None:
-    alpha = _object_alpha(hit_object.start_time, hit_object.start_time, snapshot_time, settings)
-    center = _to_frame_point(hit_object.x, hit_object.y, frame_layout)
-    _draw_circle_piece(frame, skin, center, settings.circle_diameter, combo.color, alpha, str(combo.number))
+    alpha = _object_alpha(hit_object.start_time, hit_object.start_time, snapshot_time, context.settings)
+    center = _to_frame_point(hit_object.x, hit_object.y, context.frame_layout)
+    _draw_circle_piece(frame, context, center, combo.color, alpha, str(combo.number))
 
 
 def _draw_slider(
     frame: Image.Image,
-    skin: StandardSkin,
+    context: RenderContext,
     hit_object: StandardHitObject,
     combo: ComboInfo,
     snapshot_time: int,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
 ) -> None:
-    alpha = _object_alpha(hit_object.start_time, hit_object.end_time, snapshot_time, settings)
-    path = build_slider_path(hit_object)
-    snaked_start, snaked_end = _slider_snaked_range(hit_object, snapshot_time, settings)
-    visible_path = slice_path(path, snaked_start, snaked_end)
-    frame_path = [_to_frame_point(x, y, frame_layout) for x, y in visible_path]
-    body_width = max(1, round(settings.circle_diameter * frame_layout.scale))
-    border_width = max(1, round(SLIDER_BORDER_WIDTH * frame_layout.scale))
-    _draw_slider_body(frame, frame_path, body_width, border_width, skin.slider_border, skin.slider_track, alpha)
+    alpha = _object_alpha(hit_object.start_time, hit_object.end_time, snapshot_time, context.settings)
+    slider_data = _get_slider_render_data(hit_object, context)
+    snaked_start, snaked_end = _slider_snaked_range(hit_object, snapshot_time, context.settings)
+    if _is_full_slider_body(snaked_start, snaked_end):
+        _draw_cached_slider_body(
+            frame,
+            context,
+            hit_object,
+            slider_data.frame_path.points,
+            context.skin.slider_border,
+            context.skin.slider_track,
+            alpha,
+        )
+    else:
+        visible_path = slice_path(slider_data.frame_path, snaked_start, snaked_end)
+        _draw_slider_body(
+            frame,
+            visible_path,
+            context.slider_body_width,
+            context.slider_border_width,
+            context.skin.slider_border,
+            context.skin.slider_track,
+            alpha,
+        )
 
-    head = _to_frame_point(hit_object.x, hit_object.y, frame_layout)
-    _draw_slider_reverse_arrows(frame, skin, path, hit_object.slider_repeats, settings, frame_layout, alpha)
-    _draw_slider_ball(frame, skin, path, hit_object, snapshot_time, settings, frame_layout, alpha)
-    head_alpha = _slider_head_alpha(hit_object, snapshot_time, settings, snaked_start, snaked_end)
+    _draw_slider_reverse_arrows(frame, context, slider_data, hit_object.slider_repeats, alpha)
+    _draw_slider_ball(frame, context, slider_data, hit_object, snapshot_time, alpha)
+    head_alpha = _slider_head_alpha(hit_object, snapshot_time, context.settings, snaked_start, snaked_end)
     if head_alpha > 0:
-        _draw_circle_piece(frame, skin, head, settings.circle_diameter, combo.color, head_alpha, str(combo.number))
+        _draw_circle_piece(frame, context, slider_data.head_center, combo.color, head_alpha, str(combo.number))
 
 
 def _slider_snaked_range(
@@ -433,38 +549,33 @@ def _slider_snaked_range(
 
 def _draw_spinner(
     frame: Image.Image,
-    skin: StandardSkin,
+    context: RenderContext,
     hit_object: StandardHitObject,
     snapshot_time: int,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
 ) -> None:
-    alpha = _object_alpha(hit_object.start_time, hit_object.end_time, snapshot_time, settings)
-    center = _to_frame_point(PLAYFIELD_WIDTH / 2, PLAYFIELD_HEIGHT / 2, frame_layout)
-    size = round(min(PLAYFIELD_WIDTH, PLAYFIELD_HEIGHT) * 0.95 * frame_layout.scale)
-    sprite = _resize_with_alpha(skin.spinner_circle, size, alpha)
+    alpha = _object_alpha(hit_object.start_time, hit_object.end_time, snapshot_time, context.settings)
+    center = _to_frame_point(PLAYFIELD_WIDTH / 2, PLAYFIELD_HEIGHT / 2, context.frame_layout)
+    sprite = _resize_with_alpha(context.skin.spinner_circle, context.spinner_size, alpha, context.cache)
     frame.alpha_composite(sprite, (round(center[0] - sprite.width / 2), round(center[1] - sprite.height / 2)))
 
 
 def _draw_approach_circle(
     frame: Image.Image,
-    skin: StandardSkin,
+    context: RenderContext,
     hit_object: StandardHitObject,
     color: tuple[int, int, int],
     snapshot_time: int,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
 ) -> None:
     if snapshot_time >= hit_object.start_time:
         return
 
-    elapsed = snapshot_time - (hit_object.start_time - settings.preempt_ms)
-    progress = max(0.0, min(1.0, elapsed / settings.preempt_ms))
-    alpha = 0.9 * min(1.0, elapsed / max(1.0, settings.fade_in_ms * 2))
+    elapsed = snapshot_time - (hit_object.start_time - context.settings.preempt_ms)
+    progress = max(0.0, min(1.0, elapsed / context.settings.preempt_ms))
+    alpha = 0.9 * min(1.0, elapsed / max(1.0, context.settings.fade_in_ms * 2))
     approach_scale = 4 - 3 * progress
-    size = max(1, round(settings.circle_diameter * approach_scale * frame_layout.scale))
-    center = _to_frame_point(hit_object.x, hit_object.y, frame_layout)
-    sprite = _tint_sprite(skin.approachcircle, color, alpha, size)
+    size = max(1, round(context.settings.circle_diameter * approach_scale * context.frame_layout.scale))
+    center = _to_frame_point(hit_object.x, hit_object.y, context.frame_layout)
+    sprite = _tint_sprite(context.skin.approachcircle, color, alpha, size, context.cache)
     frame.alpha_composite(sprite, (round(center[0] - sprite.width / 2), round(center[1] - sprite.height / 2)))
 
 
@@ -501,12 +612,10 @@ def _slider_head_alpha(
 
 def _draw_slider_ball(
     frame: Image.Image,
-    skin: StandardSkin,
-    path: list[tuple[float, float]],
+    context: RenderContext,
+    slider_data: SliderRenderData,
     hit_object: StandardHitObject,
     snapshot_time: int,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
     alpha: float,
 ) -> None:
     if not (hit_object.start_time <= snapshot_time <= hit_object.end_time):
@@ -514,11 +623,9 @@ def _draw_slider_ball(
 
     completion = (snapshot_time - hit_object.start_time) / max(1, hit_object.end_time - hit_object.start_time)
     progress = _slider_path_progress(max(1, hit_object.slider_repeats), completion)
-    center = _to_frame_point(*path_position_at(path, progress), frame_layout)
-    follow_size = max(1, round(settings.circle_diameter * 2.4 * frame_layout.scale))
-    ball_size = max(1, round(settings.circle_diameter * 1.15 * frame_layout.scale))
-    follow_circle = _resize_with_alpha(skin.slider_follow_circle, follow_size, alpha * 0.7)
-    ball = _resize_with_alpha(skin.slider_ball, ball_size, alpha)
+    center = path_position_at(slider_data.frame_path, progress)
+    follow_circle = _resize_with_alpha(context.skin.slider_follow_circle, context.slider_follow_size, alpha * 0.7, context.cache)
+    ball = _resize_with_alpha(context.skin.slider_ball, context.slider_ball_size, alpha, context.cache)
     frame.alpha_composite(follow_circle, (round(center[0] - follow_circle.width / 2), round(center[1] - follow_circle.height / 2)))
     frame.alpha_composite(ball, (round(center[0] - ball.width / 2), round(center[1] - ball.height / 2)))
 
@@ -535,38 +642,32 @@ def _slider_path_progress(span_count: int, completion: float) -> float:
 
 def _draw_circle_piece(
     frame: Image.Image,
-    skin: StandardSkin,
+    context: RenderContext,
     center: tuple[float, float],
-    diameter: int,
     color: tuple[int, int, int],
     alpha: float,
     number: str | None,
 ) -> None:
-    frame_diameter = max(1, round(diameter * _frame_scale()))
-    hitcircle = _tint_sprite(skin.hitcircle, color, alpha, frame_diameter)
-    overlay = _resize_with_alpha(skin.hitcircle_overlay, frame_diameter, alpha)
-    position = (round(center[0] - frame_diameter / 2), round(center[1] - frame_diameter / 2))
+    hitcircle = _tint_sprite(context.skin.hitcircle, color, alpha, context.frame_circle_diameter, context.cache)
+    overlay = _resize_with_alpha(context.skin.hitcircle_overlay, context.frame_circle_diameter, alpha, context.cache)
+    position = (round(center[0] - context.frame_circle_diameter / 2), round(center[1] - context.frame_circle_diameter / 2))
     frame.alpha_composite(hitcircle, position)
     frame.alpha_composite(overlay, position)
     if number is not None:
-        _draw_number(frame, skin, number, center, frame_diameter, alpha)
-
-
-def _frame_scale() -> float:
-    return _build_frame_layout().scale
+        _draw_number(frame, context, number, center, context.frame_circle_diameter, alpha)
 
 
 def _draw_number(
     frame: Image.Image,
-    skin: StandardSkin,
+    context: RenderContext,
     number: str,
     center: tuple[float, float],
     circle_diameter: int,
     alpha: float,
 ) -> None:
     digit_height = max(1, round(circle_diameter * 0.52))
-    digit_images = [_resize_digit(skin.digits[digit], digit_height, alpha) for digit in number]
-    overlap = round(skin.hitcircle_overlap * digit_height / 100)
+    digit_images = [_resize_digit(context.skin.digits[digit], digit_height, alpha, context.cache) for digit in number]
+    overlap = round(context.skin.hitcircle_overlap * digit_height / 100)
     total_width = sum(image.width for image in digit_images) - overlap * (len(digit_images) - 1)
     x = round(center[0] - total_width / 2)
     y = round(center[1] - digit_height / 2)
@@ -576,11 +677,14 @@ def _draw_number(
         x += digit_image.width - overlap
 
 
-def _resize_digit(sprite: Image.Image, height: int, alpha: float) -> Image.Image:
-    box = sprite.getbbox()
-    cropped = sprite.crop(box)
+def _resize_digit(sprite: Image.Image, height: int, alpha: float, cache: RenderCache) -> Image.Image:
+    cropped = cache.digit_crops.get(id(sprite))
+    if cropped is None:
+        box = sprite.getbbox()
+        cropped = sprite.crop(box)
+        cache.digit_crops[id(sprite)] = cropped
     width = max(1, round(cropped.width * height / cropped.height))
-    return _resize_with_alpha(cropped, (width, height), alpha)
+    return _resize_with_alpha(cropped, (width, height), alpha, cache)
 
 
 def _draw_slider_body(
@@ -595,17 +699,85 @@ def _draw_slider_body(
     if len(points) < 2:
         return
 
+    layer = _render_slider_body_layer(points, width, border_width, border_color, track_color, _alpha_to_byte(alpha))
+    frame.alpha_composite(layer.image, layer.offset)
+
+
+def _draw_cached_slider_body(
+    frame: Image.Image,
+    context: RenderContext,
+    hit_object: StandardHitObject,
+    points: tuple[tuple[float, float], ...],
+    border_color: tuple[int, int, int],
+    track_color: tuple[int, int, int],
+    alpha: float,
+) -> None:
+    body_key = (
+        hit_object,
+        context.slider_body_width,
+        context.slider_border_width,
+        border_color,
+        track_color,
+    )
+    layer = context.cache.slider_body_layers.get(body_key)
+    if layer is None:
+        layer = _render_slider_body_layer(
+            points,
+            context.slider_body_width,
+            context.slider_border_width,
+            border_color,
+            track_color,
+            255,
+        )
+        context.cache.slider_body_layers[body_key] = layer
+
+    alpha_key = _alpha_to_byte(alpha)
+    if alpha_key >= 255:
+        frame.alpha_composite(layer.image, layer.offset)
+        return
+
+    tinted_key = (body_key, alpha_key)
+    alpha_layer = context.cache.slider_body_alpha_layers.get(tinted_key)
+    if alpha_layer is None:
+        alpha_layer = layer.image.copy()
+        alpha_channel = alpha_layer.getchannel("A").point(lambda value: round(value * (alpha_key / 255)))
+        alpha_layer.putalpha(alpha_channel)
+        context.cache.slider_body_alpha_layers[tinted_key] = alpha_layer
+    frame.alpha_composite(alpha_layer, layer.offset)
+
+
+def _render_slider_body_layer(
+    points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    width: int,
+    border_width: int,
+    border_color: tuple[int, int, int],
+    track_color: tuple[int, int, int],
+    alpha_byte: int,
+) -> CachedLayer:
     scale = SLIDER_BODY_SUPERSAMPLE
-    layer = Image.new("RGBA", (frame.width * scale, frame.height * scale), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    scaled_points = [(x * scale, y * scale) for x, y in points]
     shadow_width = max(1, width + border_width)
+    pad = shadow_width + 4
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    left = max(0, math.floor(min(xs) - pad))
+    top = max(0, math.floor(min(ys) - pad))
+    right = min(IMAGE_WIDTH, math.ceil(max(xs) + pad))
+    bottom = min(IMAGE_HEIGHT, math.ceil(max(ys) + pad))
+
+    layer = Image.new(
+        "RGBA",
+        (max(1, (right - left) * scale), max(1, (bottom - top) * scale)),
+        (0, 0, 0, 0),
+    )
+    draw = ImageDraw.Draw(layer)
+    scaled_points = [((x - left) * scale, (y - top) * scale) for x, y in points]
     accent_width = max(1, round(width * (1 - SLIDER_LEGACY_BORDER_PORTION)))
     middle_width = max(1, round(accent_width * 0.72))
     inner_width = max(1, round(accent_width * 0.44))
     outer_track = _darken(track_color, 0.1)
     inner_track = _legacy_lighten(track_color, 0.5)
     middle_track = _mix_rgb(outer_track, inner_track, 0.5)
+    alpha = alpha_byte / 255
 
     # legacy slider body 用多层粗线叠出阴影、边框和轨道高光。
     _draw_round_path(draw, scaled_points, shadow_width * scale, (0, 0, 0, round(255 * alpha * SLIDER_LEGACY_SHADOW_ALPHA)))
@@ -613,8 +785,34 @@ def _draw_slider_body(
     _draw_round_path(draw, scaled_points, accent_width * scale, (*outer_track, round(255 * alpha * SLIDER_LEGACY_TRACK_ALPHA)))
     _draw_round_path(draw, scaled_points, middle_width * scale, (*middle_track, round(255 * alpha * SLIDER_LEGACY_TRACK_ALPHA)))
     _draw_round_path(draw, scaled_points, inner_width * scale, (*inner_track, round(255 * alpha * SLIDER_LEGACY_TRACK_ALPHA)))
-    layer = layer.resize(frame.size, Image.Resampling.LANCZOS)
-    frame.alpha_composite(layer)
+    resized_layer = layer.resize((max(1, right - left), max(1, bottom - top)), Image.Resampling.LANCZOS)
+    return CachedLayer(resized_layer, (left, top))
+
+
+def _get_slider_render_data(hit_object: StandardHitObject, context: RenderContext) -> SliderRenderData:
+    cached = context.cache.slider_data.get(hit_object)
+    if cached is not None:
+        return cached
+
+    world_path = build_slider_path(hit_object)
+    frame_points = tuple(_to_frame_point(x, y, context.frame_layout) for x, y in world_path.points)
+    frame_path = build_path(frame_points)
+    reverse_centers = tuple(
+        frame_path.points[-1] if repeat_index % 2 == 1 else frame_path.points[0]
+        for repeat_index in range(1, hit_object.slider_repeats)
+    )
+    slider_data = SliderRenderData(
+        world_path=world_path,
+        frame_path=frame_path,
+        head_center=frame_path.points[0],
+        reverse_centers=reverse_centers,
+    )
+    context.cache.slider_data[hit_object] = slider_data
+    return slider_data
+
+
+def _is_full_slider_body(snaked_start: float, snaked_end: float) -> bool:
+    return snaked_start <= 0.001 and snaked_end >= 0.999
 
 
 def _draw_round_path(
@@ -648,22 +846,27 @@ def _mix_rgb(
 
 def _draw_slider_reverse_arrows(
     frame: Image.Image,
-    skin: StandardSkin,
-    path: list[tuple[float, float]],
+    context: RenderContext,
+    slider_data: SliderRenderData,
     repeats: int,
-    settings: RenderSettings,
-    frame_layout: FrameLayout,
     alpha: float,
 ) -> None:
     if repeats <= 1:
         return
 
-    arrow_size = max(1, round(settings.circle_diameter * 0.78 * frame_layout.scale))
-    arrow = _resize_with_alpha(skin.reverse_arrow, arrow_size, alpha)
-    for repeat_index in range(1, repeats):
-        point = path[-1] if repeat_index % 2 == 1 else path[0]
-        center = _to_frame_point(*point, frame_layout)
+    arrow = _resize_with_alpha(context.skin.reverse_arrow, context.reverse_arrow_size, alpha, context.cache)
+    for center in slider_data.reverse_centers:
         frame.alpha_composite(arrow, (round(center[0] - arrow.width / 2), round(center[1] - arrow.height / 2)))
+
+
+def _target_size(size: int | tuple[int, int]) -> tuple[int, int]:
+    if isinstance(size, int):
+        return (size, size)
+    return size
+
+
+def _alpha_to_byte(alpha: float) -> int:
+    return max(0, min(255, round(alpha * 255)))
 
 
 def _tint_sprite(
@@ -671,11 +874,20 @@ def _tint_sprite(
     color: tuple[int, int, int],
     alpha: float,
     size: int | tuple[int, int],
+    cache: RenderCache,
 ) -> Image.Image:
-    resized = _resize_with_alpha(sprite, size, alpha)
+    target_size = _target_size(size)
+    alpha_key = _alpha_to_byte(alpha)
+    key = (id(sprite), target_size, color, alpha_key)
+    cached = cache.tinted.get(key)
+    if cached is not None:
+        return cached
+
+    resized = _resize_with_alpha(sprite, target_size, alpha, cache)
     mask = resized.getchannel("A")
     tinted = Image.new("RGBA", resized.size, (*color, 0))
     tinted.putalpha(mask)
+    cache.tinted[key] = tinted
     return tinted
 
 
@@ -683,15 +895,20 @@ def _resize_with_alpha(
     sprite: Image.Image,
     size: int | tuple[int, int],
     alpha: float,
+    cache: RenderCache,
 ) -> Image.Image:
-    if isinstance(size, int):
-        target_size = (size, size)
-    else:
-        target_size = size
+    target_size = _target_size(size)
+    alpha_key = _alpha_to_byte(alpha)
+    key = (id(sprite), target_size, alpha_key)
+    cached = cache.resized_alpha.get(key)
+    if cached is not None:
+        return cached
+
     resized = sprite.resize(target_size, Image.Resampling.LANCZOS)
-    if alpha < 1:
-        alpha_channel = resized.getchannel("A").point(lambda value: round(value * alpha))
+    if alpha_key < 255:
+        alpha_channel = resized.getchannel("A").point(lambda value: round(value * (alpha_key / 255)))
         resized.putalpha(alpha_channel)
+    cache.resized_alpha[key] = resized
     return resized
 
 
