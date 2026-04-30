@@ -530,10 +530,9 @@ def _slider_snaked_range(
             end = max(0.0, min(1.0, (snapshot_time - snake_start) / (settings.preempt_ms / 3)))
         return start, end
 
-    if snapshot_time > hit_object.end_time:
-        return start, end
-
-    completion = max(0.0, min(1.0, (snapshot_time - hit_object.start_time) / max(1, hit_object.end_time - hit_object.start_time)))
+    # 结束后的淡出沿用结束瞬间的 snaking 形态，避免 slider 在下一帧闪回整条路径。
+    effective_time = min(snapshot_time, hit_object.end_time)
+    completion = max(0.0, min(1.0, (effective_time - hit_object.start_time) / max(1, hit_object.end_time - hit_object.start_time)))
     span = min(span_count - 1, int(completion * span_count))
     span_progress = _slider_path_progress(span_count, completion)
 
