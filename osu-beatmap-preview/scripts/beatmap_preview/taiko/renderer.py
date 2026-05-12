@@ -113,7 +113,7 @@ def render_taiko_grid(beatmap: Beatmap, hit_objects: list[TaikoHitObject]) -> Im
     for timing_line in timing_lines:
         _draw_timing_line(image, draw, skin, timing_line, layout, font_regular, font_note)
 
-    for hit_object in hit_objects:
+    for hit_object in reversed(hit_objects):
         _draw_hit_object(image, hit_object, mapper, skin, layout)
 
     return image
