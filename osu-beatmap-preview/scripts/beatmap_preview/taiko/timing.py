@@ -99,7 +99,7 @@ def build_redline_sections(timing_points: list[TimingPoint], chart_end_time: int
         if point.time > 0:
             break
         if point.uninherited:
-            beat_length = point.beat_length
+            beat_length = point.beat_length if point.beat_length >= 60 else 60_000 / 180
             meter = point.meter
 
     sections: list[RedlineSection] = []
@@ -117,7 +117,7 @@ def build_redline_sections(timing_points: list[TimingPoint], chart_end_time: int
                     meter=meter,
                 )
             )
-        beat_length = point.beat_length
+        beat_length = point.beat_length if point.beat_length >= 60 else 60_000 / 180
         meter = point.meter
         section_start = point_time
 
@@ -425,8 +425,9 @@ def _apply_timing_state(
 ) -> tuple[float, int, float]:
     # 红线修改 BPM / 拍号；绿线修改 scroll speed。
     if point.uninherited:
-        return point.beat_length, point.meter, scroll_speed
-    if point.beat_length >= 0:
+        bl = point.beat_length if point.beat_length >= 60 else 60_000 / 180
+        return bl, point.meter, scroll_speed
+    if point.beat_length >= -0.001:
         return beat_length, meter, 1.0
     return beat_length, meter, -100 / point.beat_length
 
