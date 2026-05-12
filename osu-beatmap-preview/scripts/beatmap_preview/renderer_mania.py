@@ -57,6 +57,9 @@ BEAT_LINE = (200, 200, 200, 72)  # 拍线颜色
 SUBDIVISION_LINE = (180, 180, 180, 48)  # 细分节拍线颜色
 LANE_SEPARATOR = (32, 32, 32, 255)  # 轨道分隔线颜色
 NOTE_SIDE_PADDING = 2  # note 左右内边距
+TIME_LABEL_FONT_SIZE = 20  # 时间标签字号
+SV_TEXT_COLOR = (95, 221, 108, 255)  # sv 文字显示颜色
+SV_TEXT_FONT_SIZE = 10  # sv 文字字号
 
 
 @dataclass(frozen=True)
@@ -86,10 +89,12 @@ def render_mania_preview(
     try:
         key_count = int(float(beatmap.difficulty["CircleSize"]))
         palette = LANE_COLOR_PALETTES[key_count]
-        font_regular = ImageFont.load_default()
+        font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
+        font_sv = ImageFont.load_default(size=SV_TEXT_FONT_SIZE)
         beatmap_duration = max(hit_object.end_time for hit_object in beatmap.hit_objects)
         chart_end_time = beatmap_duration + BOTTOM_PADDING_MS
         timing_lines = _build_timing_lines(beatmap.timing_points, chart_end_time)
+        sv_changes = _build_sv_changes(beatmap.timing_points, chart_end_time)
         layout = _build_layout(key_count, beatmap_duration, chart_end_time)
 
         image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
@@ -100,6 +105,9 @@ def render_mania_preview(
 
         for timing_line in timing_lines:
             _draw_timing_line(draw, timing_line, layout, font_regular)
+
+        for sv_change in sv_changes:
+            _draw_sv_indicator(draw, sv_change, layout, font_sv)
 
         for hit_object in beatmap.hit_objects:
             _draw_hit_object(draw, hit_object, palette, layout)
@@ -222,14 +230,16 @@ def _draw_timing_line(
         label = f"{timing_line.time / 1000:.1f}s"
         label_box = draw.textbbox((0, 0), label, font=font)
         label_width = label_box[2] - label_box[0]
+        text_mid_y = (label_box[1] + label_box[3]) / 2
         label_x = column_left + layout.column_width + 4
         if column_index < layout.column_count - 1:
             next_column_left = column_left + layout.column_width + COLUMN_GAP
             label_x = min(label_x, next_column_left - label_width - 4)
         else:
             label_x = min(label_x, layout.image_width - PAGE_MARGIN_X - label_width)
+        label_y = max(chart_top, y - text_mid_y)
         draw.text(
-            (label_x, max(chart_top, y - 6)),
+            (label_x, label_y),
             label,
             fill=RULER_TEXT,
             font=font,
@@ -303,7 +313,13 @@ def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -
         if index + 1 < len(base_points):
             segment_end = int(base_points[index + 1].time)
 
-        subdivision = _choose_subdivision(point.beat_length)
+        beat_pixels = point.beat_length * PIXELS_PER_MS
+        if beat_pixels >= 72:
+            subdivision = 4
+        elif beat_pixels >= 28:
+            subdivision = 2
+        else:
+            subdivision = 1
         step = point.beat_length / subdivision
         step_index = 0
         current = point.time
@@ -315,7 +331,7 @@ def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -
                 timing_lines.append(
                     TimingLine(
                         time=int(round(current)),
-                        color=_timing_line_color(is_bar, is_beat),
+                        color=MEASURE_LINE if is_bar else (BEAT_LINE if is_beat else SUBDIVISION_LINE),
                         show_label=is_bar or is_beat,
                     )
                 )
@@ -329,19 +345,52 @@ def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -
     return [ordered_unique[time] for time in sorted(ordered_unique)]
 
 
-def _choose_subdivision(beat_length: float) -> int:
-    beat_pixels = beat_length * PIXELS_PER_MS
-    # BPM 越快，拍线越密；减少细分能防止画面被网格线淹没。
-    if beat_pixels >= 72:
-        return 4
-    if beat_pixels >= 28:
-        return 2
-    return 1
+def _build_sv_changes(timing_points: list[TimingPoint], chart_end_time: int) -> list[tuple[int, float]]:
+    # 从 inherited (绿线) timing points 提取 SV 变速点，过滤连续相同值。
+    inherited = [
+        point for point in timing_points
+        if not point.uninherited and point.beat_length < 0 and 0 <= point.time <= chart_end_time
+    ]
+    if not inherited:
+        return []
+
+    changes: list[tuple[int, float]] = []
+    prev_sv: float | None = None
+    for point in inherited:
+        sv = -100.0 / point.beat_length
+        if prev_sv is None or abs(sv - prev_sv) > 0.001:
+            changes.append((int(point.time), sv))
+            prev_sv = sv
+
+    return changes
 
 
-def _timing_line_color(is_bar: bool, is_beat: bool) -> str:
-    if is_bar:
-        return MEASURE_LINE
-    if is_beat:
-        return BEAT_LINE
-    return SUBDIVISION_LINE
+def _draw_sv_indicator(
+    draw: ImageDraw.ImageDraw,
+    sv_change: tuple[int, float],
+    layout: RenderLayout,
+    font: ImageFont.ImageFont,
+) -> None:
+    time, sv = sv_change
+    column_index = min(layout.column_count - 1, time // layout.time_per_column)
+    local_time = time - column_index * layout.time_per_column
+    column_left = PAGE_MARGIN_X + column_index * (layout.column_width + COLUMN_GAP)
+    chart_top = PAGE_MARGIN_Y + TOP_BUFFER
+    y = chart_top + layout.column_height - round(local_time * PIXELS_PER_MS)
+
+    if sv == round(sv, 1):
+        label = f"{sv:.1f}x"
+    else:
+        label = f"{sv:.2f}x"
+    label_box = draw.textbbox((0, 0), label, font=font)
+    label_width = label_box[2] - label_box[0]
+    text_mid_y = (label_box[1] + label_box[3]) / 2
+
+    label_x = max(0, column_left - 1 - label_width)
+    label_y = max(chart_top, y - text_mid_y)
+    draw.text(
+        (label_x, label_y),
+        label,
+        fill=SV_TEXT_COLOR,
+        font=font,
+    )
