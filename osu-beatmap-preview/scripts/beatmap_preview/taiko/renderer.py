@@ -23,6 +23,9 @@ from .config import (
     BPM_FONT_SIZE,
     BPM_TOP_GAP,
     LABEL_RIGHT_PADDING,
+    SV_TEXT_COLOR,
+    SV_TEXT_FONT_SIZE,
+    SV_TOP_GAP,
     MAX_SUPPORTED_DURATION_MS,
     MIN_BEAT_LINE_SPACING,
     NORMAL_NOTE_SIZE_RATIO,
@@ -52,10 +55,12 @@ from .skin import TaikoSkin, load_taiko_skin
 from .timing import (
     RedlineSection,
     ScrollPositionMapper,
+    SvChange,
     TimingLine,
     build_kiai_sections,
     build_redline_sections,
     build_scroll_mapper,
+    build_sv_changes,
     build_timing_lines,
 )
 
@@ -108,6 +113,8 @@ def render_taiko_grid(beatmap: Beatmap, hit_objects: list[TaikoHitObject]) -> Im
     font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
     font_note = ImageFont.load_default(size=TIME_LABEL_NOTE_FONT_SIZE)
     font_bpm = ImageFont.load_default(size=BPM_FONT_SIZE)
+    font_sv = ImageFont.load_default(size=SV_TEXT_FONT_SIZE)
+    sv_changes = build_sv_changes(beatmap.timing_points, chart_end_time, mapper)
     image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
     draw = ImageDraw.Draw(image)
 
@@ -117,6 +124,8 @@ def render_taiko_grid(beatmap: Beatmap, hit_objects: list[TaikoHitObject]) -> Im
 
     for timing_line in timing_lines:
         _draw_timing_line(image, draw, skin, timing_line, layout, font_regular, font_note, font_bpm)
+
+    _draw_sv_indicators(draw, sv_changes, layout, font_sv)
 
     for hit_object in reversed(hit_objects):
         _draw_hit_object(image, hit_object, mapper, skin, layout)
@@ -502,3 +511,31 @@ def _tint_sprite(
     color_green = green.point(lambda value: round(value * color[1] / 255))
     color_blue = blue.point(lambda value: round(value * color[2] / 255))
     return Image.merge("RGBA", (color_red, color_green, color_blue, alpha))
+
+
+def _draw_sv_indicators(
+    draw: ImageDraw.ImageDraw,
+    sv_changes: list[SvChange],
+    layout: RenderLayout,
+    font: ImageFont.ImageFont,
+) -> None:
+    for sv_change in sv_changes:
+        row_index = min(layout.row_count - 1, int(sv_change.position // layout.max_row_width))
+        local_position = sv_change.position - row_index * layout.max_row_width
+        x = round(_row_chart_left(layout, row_index) + local_position)
+        row_top = _row_top(row_index)
+
+        label = _format_sv_label(sv_change.sv)
+        label_box = draw.textbbox((0, 0), label, font=font)
+        label_width = label_box[2] - label_box[0]
+        label_height = label_box[3] - label_box[1]
+
+        label_x = round(x - label_width / 2)
+        label_y = max(PAGE_MARGIN_Y, row_top - SV_TOP_GAP - label_height)
+        draw.text((label_x, label_y), label, fill=SV_TEXT_COLOR, font=font)
+
+
+def _format_sv_label(sv: float) -> str:
+    if sv == round(sv, 1):
+        return f"{sv:.1f}x"
+    return f"{sv:.2f}x"

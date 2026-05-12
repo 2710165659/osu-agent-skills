@@ -35,6 +35,9 @@ TIME_LABEL_TOP_GAP = 0  # 行底部与时间标签之间的间距
 TIME_LABEL_NOTE_TOP_GAP = 11  # 主时间与备注之间的间距
 BPM_TOP_GAP = 11  # 备注与 BPM 之间的间距
 TIME_LABEL_HEIGHT = 170  # 时间标签预留高度，包含主时间、备注与 BPM
+SV_TEXT_COLOR = (255, 217, 102, 255)  # SV 指示文字颜色
+SV_TEXT_FONT_SIZE = 30  # SV 指示字号
+SV_TOP_GAP = 1  # SV 文字与行顶部之间的间距
 
 IMAGE_BACKGROUND = (0, 0, 0, 255)  # 整体背景色
 CENTRE_NOTE_COLOR = (235, 69, 44)  # don note 颜色

@@ -432,6 +432,37 @@ def _apply_timing_state(
     return beat_length, meter, -100 / point.beat_length
 
 
+@dataclass(frozen=True)
+class SvChange:
+    time: int
+    position: float
+    sv: float
+
+
+def build_sv_changes(
+    timing_points: list[TimingPoint],
+    chart_end_time: int,
+    mapper: ScrollPositionMapper,
+) -> list[SvChange]:
+    inherited = [
+        tp for tp in timing_points
+        if not tp.uninherited and tp.beat_length < -0.001 and 0 <= tp.time <= chart_end_time
+    ]
+    if not inherited:
+        return []
+
+    changes: list[SvChange] = []
+    prev_sv: float | None = None
+    for tp in inherited:
+        sv = -100.0 / tp.beat_length
+        if prev_sv is not None and abs(sv - prev_sv) <= 0.001:
+            continue
+        prev_sv = sv
+        changes.append(SvChange(time=int(tp.time), position=mapper.position_at(tp.time), sv=sv))
+
+    return changes
+
+
 def _pixels_per_ms(
     slider_multiplier: float,
     scroll_speed: float,
