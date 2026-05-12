@@ -14,7 +14,7 @@ ROW_WIDTH_BPM_240_TO_300 = 1.3  # [240, 300) BPM 单行宽度倍率；SPACING_BP
 ROW_WIDTH_BPM_300_PLUS = 1.45  # [300, +inf) BPM 单行宽度倍率；SPACING_BPM 不为 0 时不生效
 
 DRAW_DRUM_EACH_ROW = False  # 是否每行开头都绘制鼓
-ROW_GAP = 37  # 行与行之间间距
+ROW_GAP = 160  # 行与行之间间距
 ROW_HEIGHT = 160  # 单行高度
 SPACING_BPM = 0.0  # 按多少 BPM 绘制横向间距；0 表示按游戏内 BPM/SV 效果绘制
 
@@ -34,7 +34,6 @@ BPM_FONT_SIZE = 45  # BPM 指示字号
 TIME_LABEL_TOP_GAP = 0  # 行底部与时间标签之间的间距
 TIME_LABEL_NOTE_TOP_GAP = 11  # 主时间与备注之间的间距
 BPM_TOP_GAP = 11  # 备注与 BPM 之间的间距
-TIME_LABEL_HEIGHT = 170  # 时间标签预留高度，包含主时间、备注与 BPM
 SV_TEXT_COLOR = (255, 217, 102, 255)  # SV 指示文字颜色
 SV_TEXT_FONT_SIZE = 30  # SV 指示字号
 SV_TOP_GAP = 1  # SV 文字与行顶部之间的间距

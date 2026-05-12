@@ -46,7 +46,6 @@ from .config import (
     SWELL_BODY_HEIGHT_RATIO,
     SWELL_COLOR,
     TIME_LABEL_FONT_SIZE,
-    TIME_LABEL_HEIGHT,
     TIME_LABEL_NOTE_FONT_SIZE,
     TIME_LABEL_NOTE_TOP_GAP,
     TIME_LABEL_TOP_GAP,
@@ -149,8 +148,7 @@ def _build_layout(
     right_panel_width = ROW_INNER_PADDING_X * 2 + max_row_width
     content_width = left_panel_width + right_panel_width
     image_width = PAGE_MARGIN_X * 2 + content_width
-    row_total_height = ROW_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
-    image_height = PAGE_MARGIN_Y * 2 + row_count * row_total_height + (row_count - 1) * ROW_GAP
+    image_height = PAGE_MARGIN_Y * 2 + row_count * ROW_HEIGHT + (row_count - 1) * ROW_GAP
     normal_note_diameter = round(ROW_HEIGHT * NORMAL_NOTE_SIZE_RATIO)
     big_note_diameter = round(normal_note_diameter * BIG_NOTE_SCALE)
     return RenderLayout(
@@ -474,8 +472,7 @@ def _draw_note_sprite(
 
 
 def _row_top(row_index: int) -> int:
-    row_total_height = ROW_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
-    return PAGE_MARGIN_Y + row_index * (row_total_height + ROW_GAP)
+    return PAGE_MARGIN_Y + row_index * (ROW_HEIGHT + ROW_GAP)
 
 
 def _row_center_y(row_index: int) -> int:
