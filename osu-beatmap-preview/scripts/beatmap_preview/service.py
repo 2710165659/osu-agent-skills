@@ -15,7 +15,7 @@ from .catch.renderer import render_catch_grid
 from .mania.renderer import render_mania_grid
 
 
-def generate_preview(bid: str, skill_root: Path, fmt: str = "png") -> dict[str, object]:
+def generate_preview(bid: str, skill_root: Path, fmt: str = "gif") -> dict[str, object]:
     if not bid.isdigit():
         raise PreviewError("bid must be numeric")
 

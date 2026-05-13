@@ -20,8 +20,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format", "--fmt",
         choices=["png", "gif"],
-        default="png",
-        help="output format (default: png)",
+        default="gif",
+        help="output format (default: gif for standard, png for others)",
     )
     return parser
 
