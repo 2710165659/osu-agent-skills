@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageFont
 
+from pathlib import Path
+
 from ..errors import PreviewError
 from ..models import Beatmap, CatchHitObject, TimingPoint
 from .config import (
@@ -79,8 +81,9 @@ class RenderLayout:
     catcher_metrics: CatcherMetrics
 
 
-def render_catch_grid(beatmap: Beatmap, hit_objects: list[CatchHitObject]) -> Image.Image:
+def render_catch_grid(beatmap: Beatmap, output_path: Path) -> Path:
     """把 osu!catch 谱面渲染为纵向多列预览图。"""
+    hit_objects = [ho for ho in beatmap.hit_objects if isinstance(ho, CatchHitObject)]
     if not hit_objects:
         raise PreviewError("catch beatmap has no hit objects")
 
@@ -105,7 +108,8 @@ def render_catch_grid(beatmap: Beatmap, hit_objects: list[CatchHitObject]) -> Im
     for catch_object in sorted(render_objects, key=lambda item: (-item.start_time, _object_order(item.object_type))):
         _draw_catch_object(image, skin, catch_object, layout)
 
-    return image
+    image.save(output_path)
+    return output_path
 
 
 def _build_layout(

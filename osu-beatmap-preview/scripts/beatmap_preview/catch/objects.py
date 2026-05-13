@@ -90,9 +90,6 @@ def build_catch_render_objects(
     combo_colors: list[tuple[int, int, int]],
 ) -> list[CatchRenderObject]:
     """把顶层 catch 物件展开成真正落下的 fruit / droplet / banana 列表。"""
-    if not hit_objects:
-        raise PreviewError("catch beatmap has no hit objects")
-
     slider_tick_rate = float(beatmap.difficulty["SliderTickRate"])
     slider_multiplier = float(beatmap.difficulty["SliderMultiplier"])
     beatmap_format_version = int(beatmap.general.get("FormatVersion", "14"))
@@ -120,7 +117,7 @@ def build_catch_render_objects(
             continue
         render_objects.append(_build_fruit_object(hit_object.x, hit_object.start_time, index, combo_color))
 
-    return _apply_hyper_dash(_clamp_positions(render_objects), float(beatmap.difficulty["CircleSize"]))
+    return _apply_hyper_dash(render_objects, float(beatmap.difficulty["CircleSize"]))
 
 
 def _color_for_index(
@@ -465,11 +462,6 @@ def _apply_hyper_dash(
     return updated_objects
 
 
-def _clamp_positions(render_objects: list[CatchRenderObject]) -> list[CatchRenderObject]:
-    return [
-        replace(catch_object, x=max(0.0, min(catch_object.x, PLAYFIELD_WIDTH)))
-        for catch_object in render_objects
-    ]
 
 
 def _event_time(catch_object: CatchRenderObject) -> float:

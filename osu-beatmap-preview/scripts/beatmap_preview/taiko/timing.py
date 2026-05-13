@@ -172,7 +172,7 @@ def build_timing_lines(
     mapper: ScrollPositionMapper,
     min_beat_line_spacing: int,
     kiai_sections: list[KiaiSection],
-    first_note_time: int = 0,
+    first_note_time: int,
 ) -> list[TimingLine]:
     # 同一毫秒可能因为 timing section 边界被重复生成，最后用 dict 去重。
     line_by_time: dict[int, TimingLine] = {}

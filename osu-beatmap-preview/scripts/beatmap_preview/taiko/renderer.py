@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ..errors import PreviewError
 from ..models import Beatmap, TaikoHitObject
 from .config import (
     BASE_ROW_WIDTH_0_TO_1_MIN,
@@ -82,8 +84,12 @@ class RenderLayout:
     big_note_diameter: int
 
 
-def render_taiko_grid(beatmap: Beatmap, hit_objects: list[TaikoHitObject]) -> Image.Image:
+def render_taiko_grid(beatmap: Beatmap, output_path: Path) -> Path:
     """把 osu!taiko 谱面渲染为横向多行预览图。"""
+    hit_objects = [ho for ho in beatmap.hit_objects if isinstance(ho, TaikoHitObject)]
+    if not hit_objects:
+        raise PreviewError("taiko beatmap has no hit objects")
+
     skin = load_taiko_skin()
     slider_multiplier = float(beatmap.difficulty["SliderMultiplier"])
     chart_end_time = max(hit_object.end_time for hit_object in hit_objects)
@@ -117,7 +123,6 @@ def render_taiko_grid(beatmap: Beatmap, hit_objects: list[TaikoHitObject]) -> Im
     image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
     draw = ImageDraw.Draw(image)
 
-    # 先画背景，再画小节线，最后画 note，保证层级与游戏观感一致。
     for row_index in range(layout.row_count):
         _draw_row_background(image, skin, layout, row_index)
 
@@ -129,7 +134,8 @@ def render_taiko_grid(beatmap: Beatmap, hit_objects: list[TaikoHitObject]) -> Im
     for hit_object in reversed(hit_objects):
         _draw_hit_object(image, hit_object, mapper, skin, layout)
 
-    return image
+    image.save(output_path)
+    return output_path
 
 
 def _build_layout(
@@ -193,7 +199,7 @@ def _resolve_row_width_bpm_multiplier(redline_sections: list[RedlineSection]) ->
 
 
 def _resolve_main_bpm(redline_sections: list[RedlineSection]) -> float:
-    # 用红线 section 的持续时长加权，取“主 BPM”作为宽度倍率依据。
+    # 用红线 section 的持续时长加权，取"主 BPM"作为宽度倍率依据。
     # 这样比直接取最高 BPM 更稳，不会因为短暂变速把整图拉得过宽。
     weighted_duration_by_bpm: dict[int, int] = {}
     for section in redline_sections:

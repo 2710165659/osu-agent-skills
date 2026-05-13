@@ -1,23 +1,14 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ..errors import PreviewError
 from ..models import Beatmap, BreakPeriod, StandardHitObject
 from .config import (
-    BREAK_FADE_DURATION_MS,
-    BREAK_GAP_MS,
-    BREAK_MIN_DURATION_MS,
-    BREAK_OVERLAY_BAR_HEIGHT,
-    BREAK_OVERLAY_BAR_WIDTH_RATIO,
-    BREAK_OVERLAY_COLOR,
-    BREAK_OVERLAY_COUNTER_FONT_SIZE,
-    BREAK_OVERLAY_INFO_COLOR,
-    BREAK_OVERLAY_INFO_FONT_SIZE,
-    BREAK_OVERLAY_INFO_TOP_GAP,
-    BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE,
     CANVAS_BACKGROUND_COLOR,
     GIF_DURATION_MS,
     GIF_FPS,
@@ -33,26 +24,10 @@ from .config import (
     INTRA_ROW_IMAGE_GAP,
     LEFT_PANEL_BACKGROUND_COLOR,
     LEFT_PANEL_WIDTH,
-    OBJECT_RADIUS,
-    PLAYFIELD_HEIGHT,
-    PLAYFIELD_STORYBOARD_SHIFT,
-    PLAYFIELD_VIEWPORT_RATIO,
-    PLAYFIELD_WIDTH,
-    POST_HIT_FADE_MS,
     PNG_IMAGES_PER_ROW,
     PNG_MS_PER_IMAGE,
     PNG_ROW_COUNT,
     PREVIEW_TIME_LABEL_COLOR,
-    SLIDER_BODY_SUPERSAMPLE,
-    SLIDER_BORDER_WIDTH,
-    SLIDER_FADE_OUT_MS,
-    SLIDER_LEGACY_BORDER_PORTION,
-    SLIDER_LEGACY_SHADOW_ALPHA,
-    SLIDER_LEGACY_TRACK_ALPHA,
-    STANDARD_OUTPUT_FORMAT,
-    SNAKING_IN_SLIDERS,
-    SNAKING_OUT_SLIDERS,
-    SPINNER_FADE_OUT_MS,
     TIME_LABEL_COLOR,
     TIME_LABEL_FONT_SIZE,
     TIME_LABEL_HEIGHT,
@@ -62,9 +37,45 @@ from .config import (
     TIME_LABEL_TOP_GAP,
     VERTICAL_PAGE_MARGIN,
 )
-from .row_selection import RowTiming, choose_row_start_times
 from .skin import StandardSkin, load_standard_skin
 from .slider_path import SliderPath, build_path, build_slider_path, path_position_at, slice_path
+
+# ——— osu! 源码相关常量 ———
+PLAYFIELD_WIDTH = 512  # osu!standard 原始游玩区域宽度
+PLAYFIELD_HEIGHT = 384  # osu!standard 原始游玩区域高度
+PLAYFIELD_VIEWPORT_RATIO = 0.8  # osu!standard gameplay playfield 在 4:3 视口内的缩放比例
+PLAYFIELD_STORYBOARD_SHIFT = 8  # lazer gameplay 为对齐 storyboard 对 playfield 施加的下移量
+OBJECT_RADIUS = 64  # osu! 源码中 hit object 基础半径
+BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE = 1.00041  # osu!stable 历史圆大小修正
+POST_HIT_FADE_MS = 120  # 普通 hit circle 命中后的短暂残留时间
+SLIDER_FADE_OUT_MS = 240  # slider 结束后的淡出时间
+SPINNER_FADE_OUT_MS = 240  # spinner 结束后的淡出时间
+BREAK_GAP_MS = 2200  # 未声明 break 时，将长于此值的无 note 间隔视为 break
+BREAK_MIN_DURATION_MS = 650  # osu! BreakPeriod.MIN_BREAK_DURATION，短于此值不产生 break overlay
+BREAK_FADE_DURATION_MS = BREAK_MIN_DURATION_MS // 2  # osu! BreakOverlay.BREAK_FADE_DURATION
+BREAK_OVERLAY_BAR_WIDTH_RATIO = 0.3  # osu! break 剩余时间条最大宽度占屏幕比例
+BREAK_OVERLAY_BAR_HEIGHT = 8  # osu! break 剩余时间条高度
+BREAK_OVERLAY_COUNTER_FONT_SIZE = 33  # osu! RemainingTimeCounter 数字字号
+BREAK_OVERLAY_INFO_FONT_SIZE = 18  # 图片中央 break 时间说明字号
+BREAK_OVERLAY_INFO_TOP_GAP = 14  # 剩余时间条与 break 时间说明之间的间距
+BREAK_OVERLAY_COLOR = (238, 238, 238, 255)  # break overlay 主文字颜色
+BREAK_OVERLAY_INFO_COLOR = (185, 185, 185, 255)  # break 时间说明颜色
+SLIDER_BORDER_WIDTH = 6  # slider 轨道边框宽度
+SLIDER_BODY_SUPERSAMPLE = 3  # slider body 临时高分辨率绘制倍数，减少曲线接缝
+SLIDER_LEGACY_BORDER_PORTION = 0.1875  # osu!stable legacy slider body 边框在半径中的占比
+SLIDER_LEGACY_TRACK_ALPHA = 0.7  # legacy slider track override 固定透明度
+SLIDER_LEGACY_SHADOW_ALPHA = 0.25  # legacy slider body 外侧阴影透明度
+SNAKING_IN_SLIDERS = True  # 对应 osu! 设置项 Snaking in sliders 打开
+SNAKING_OUT_SLIDERS = True  # 对应 osu! 设置项 Snaking out sliders 打开
+
+
+# ——— dataclasses ———
+
+@dataclass(frozen=True)
+class RowTiming:
+    start_time: int
+    is_preview: bool
+    break_periods: tuple[BreakPeriod, ...]
 
 
 @dataclass(frozen=True)
@@ -140,33 +151,36 @@ class RenderContext:
     cache: RenderCache
 
 
-def get_standard_output_extension() -> str:
-    return f".{_get_standard_output_format()}"
+# ——— public API ———
+
+def render_standard(beatmap: Beatmap, hit_objects: list[StandardHitObject], fmt: str) -> Image.Image | tuple[list[Image.Image], int, int]:
+    if fmt == "png":
+        return _render_png_grid(beatmap, hit_objects)
+    if fmt == "gif":
+        return _render_gif(beatmap, hit_objects)
+    raise PreviewError(f"unsupported standard output format: {fmt}")
 
 
-def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> Image.Image:
-    """把 osu!standard 谱面渲染为多行游玩截图网格。"""
+# ——— PNG grid ———
+
+def _render_png_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> Image.Image:
     context = _build_render_context(beatmap, hit_objects)
-    row_timings = choose_row_start_times(
+    row_timings = _choose_row_start_times(
         beatmap=beatmap,
         hit_objects=hit_objects,
         row_count=PNG_ROW_COUNT,
         images_per_row=PNG_IMAGES_PER_ROW,
         ms_per_row_duration=PNG_MS_PER_IMAGE,
-        break_gap_ms=BREAK_GAP_MS,
     )
     font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
     font_note = ImageFont.load_default(size=TIME_LABEL_NOTE_FONT_SIZE)
     canvas = Image.new("RGBA", _build_png_canvas_size(), CANVAS_BACKGROUND_COLOR)
     draw = ImageDraw.Draw(canvas)
 
-    # 每一行是一段时间窗口，行内多张截图按固定间隔向后推进。
     for row_index, row_timing in enumerate(row_timings):
         snapshot_times = tuple(row_timing.start_time + image_index * PNG_MS_PER_IMAGE for image_index in range(PNG_IMAGES_PER_ROW))
         visible_index_groups = _build_visible_indexes_by_snapshot(hit_objects, snapshot_times, context.settings.preempt_ms)
-        y = VERTICAL_PAGE_MARGIN + row_index * (
-            IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT + INTER_ROW_GAP
-        )
+        y = VERTICAL_PAGE_MARGIN + row_index * (IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT + INTER_ROW_GAP)
         for image_index in range(PNG_IMAGES_PER_ROW):
             snapshot_time = snapshot_times[image_index]
             x = HORIZONTAL_PAGE_MARGIN + image_index * (IMAGE_WIDTH + INTRA_ROW_IMAGE_GAP)
@@ -180,30 +194,24 @@ def render_standard_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject])
             note = _build_time_label_note(row_timing) if image_index == 0 else None
             is_preview_label = row_timing.is_preview and image_index == 0
             _draw_time_label(
-                draw,
-                _format_time(snapshot_time),
-                x,
-                y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
-                font_regular,
-                font_note,
-                note,
+                draw, _format_time(snapshot_time), x, y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
+                font_regular, font_note, note,
                 PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_COLOR,
                 PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_NOTE_COLOR,
             )
-
     return canvas
 
 
-def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple[list[Image.Image], int, int]:
-    """把 osu!standard 谱面渲染为带时间段标签的 2x2 GIF 帧序列。"""
+# ——— GIF ———
+
+def _render_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple[list[Image.Image], int, int]:
     context = _build_render_context(beatmap, hit_objects)
-    row_timings = choose_row_start_times(
+    row_timings = _choose_row_start_times(
         beatmap=beatmap,
         hit_objects=hit_objects,
         row_count=GIF_ROW_COUNT * GIF_IMAGES_PER_ROW,
         images_per_row=2,
         ms_per_row_duration=GIF_DURATION_MS,
-        break_gap_ms=BREAK_GAP_MS,
     )
     font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
     font_note = ImageFont.load_default(size=TIME_LABEL_NOTE_FONT_SIZE)
@@ -237,13 +245,9 @@ def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) 
             note = _build_time_label_note(row_timing)
             is_preview_label = row_timing.is_preview
             _draw_time_label(
-                draw,
-                _build_gif_time_label(row_timing.start_time),
-                x,
-                y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
-                font_regular,
-                font_note,
-                note,
+                draw, _build_gif_time_label(row_timing.start_time),
+                x, y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
+                font_regular, font_note, note,
                 PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_COLOR,
                 PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_NOTE_COLOR,
             )
@@ -252,6 +256,149 @@ def render_standard_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) 
 
     return frames, frame_duration_ms, GIF_LOOP
 
+
+# ——— row selection (merged from row_selection.py) ———
+
+def _choose_row_start_times(
+    beatmap: Beatmap,
+    hit_objects: list[StandardHitObject],
+    row_count: int,
+    images_per_row: int,
+    ms_per_row_duration: int,
+) -> list[RowTiming]:
+    row_duration = (images_per_row - 1) * ms_per_row_duration
+    valid_intervals = _build_valid_row_start_intervals(hit_objects, beatmap.break_periods, row_duration)
+    if not valid_intervals:
+        raise PreviewError("not enough playable time to render standard preview rows")
+
+    preview_time = int(beatmap.general["PreviewTime"])
+    if preview_time < 0:
+        preview_time = hit_objects[0].start_time
+
+    chosen = [preview_time]
+    random_source = random.Random()
+    attempts = 0
+    while len(chosen) < row_count and attempts < 3000:
+        attempts += 1
+        candidate = _random_start_from_intervals(valid_intervals, random_source)
+        if _does_not_overlap_existing(candidate, row_duration, chosen):
+            chosen.append(candidate)
+
+    if len(chosen) < row_count:
+        for candidate in _fallback_start_candidates(valid_intervals, hit_objects):
+            if _does_not_overlap_existing(candidate, row_duration, chosen):
+                chosen.append(candidate)
+            if len(chosen) == row_count:
+                break
+
+    if len(chosen) < row_count:
+        raise PreviewError("could not find enough non-overlapping standard preview rows")
+
+    return [
+        RowTiming(
+            start_time=start_time,
+            is_preview=start_time == preview_time,
+            break_periods=tuple(_break_periods_overlapping_row(beatmap.break_periods, start_time, row_duration)),
+        )
+        for start_time in sorted(chosen)
+    ]
+
+
+def _build_valid_row_start_intervals(
+    hit_objects: list[StandardHitObject],
+    break_periods: list[BreakPeriod],
+    row_duration: int,
+) -> list[tuple[int, int]]:
+    chart_start = hit_objects[0].start_time
+    chart_end = max(hit_object.end_time for hit_object in hit_objects)
+    forbidden = _merge_periods([*break_periods, *_infer_break_periods(hit_objects)])
+    playable_segments = _subtract_periods(chart_start, chart_end, forbidden)
+    intervals = []
+    for start, end in playable_segments:
+        latest_start = end - row_duration
+        if latest_start >= start:
+            intervals.append((start, latest_start))
+    return intervals
+
+
+def _infer_break_periods(hit_objects: list[StandardHitObject]) -> list[BreakPeriod]:
+    periods: list[BreakPeriod] = []
+    previous_end = hit_objects[0].end_time
+    for hit_object in hit_objects[1:]:
+        if hit_object.start_time - previous_end >= BREAK_GAP_MS:
+            periods.append(BreakPeriod(start_time=previous_end, end_time=hit_object.start_time))
+        previous_end = max(previous_end, hit_object.end_time)
+    return periods
+
+
+def _merge_periods(periods: list[BreakPeriod]) -> list[BreakPeriod]:
+    ordered = sorted(periods, key=lambda period: (period.start_time, period.end_time))
+    merged: list[BreakPeriod] = []
+    for period in ordered:
+        if not merged or period.start_time > merged[-1].end_time:
+            merged.append(period)
+            continue
+        previous = merged[-1]
+        merged[-1] = BreakPeriod(previous.start_time, max(previous.end_time, period.end_time))
+    return merged
+
+
+def _subtract_periods(start_time: int, end_time: int, forbidden_periods: list[BreakPeriod]) -> list[tuple[int, int]]:
+    segments: list[tuple[int, int]] = []
+    cursor = start_time
+    for period in forbidden_periods:
+        if period.end_time <= cursor:
+            continue
+        if period.start_time > cursor:
+            segments.append((cursor, min(period.start_time, end_time)))
+        cursor = max(cursor, period.end_time)
+        if cursor >= end_time:
+            break
+    if cursor < end_time:
+        segments.append((cursor, end_time))
+    return [(start, end) for start, end in segments if end > start]
+
+
+def _nearest_valid_start(time: int, intervals: list[tuple[int, int]]) -> int:
+    if any(start <= time <= end for start, end in intervals):
+        return time
+    return min(
+        (start if time < start else end for start, end in intervals),
+        key=lambda candidate: abs(candidate - time),
+    )
+
+
+def _random_start_from_intervals(intervals: list[tuple[int, int]], random_source: random.Random) -> int:
+    total = sum(end - start + 1 for start, end in intervals)
+    pick = random_source.randrange(total)
+    for start, end in intervals:
+        length = end - start + 1
+        if pick < length:
+            return start + pick
+        pick -= length
+    return intervals[-1][1]
+
+
+def _does_not_overlap_existing(candidate: int, row_duration: int, chosen: list[int]) -> bool:
+    candidate_end = candidate + row_duration
+    for existing in chosen:
+        existing_end = existing + row_duration
+        if candidate < existing_end and candidate_end > existing:
+            return False
+    return True
+
+
+def _fallback_start_candidates(intervals: list[tuple[int, int]], hit_objects: list[StandardHitObject]) -> list[int]:
+    candidates = [_nearest_valid_start(hit_object.start_time, intervals) for hit_object in hit_objects]
+    return sorted(set(candidates))
+
+
+def _break_periods_overlapping_row(break_periods: list[BreakPeriod], row_start_time: int, row_duration: int) -> list[BreakPeriod]:
+    row_end_time = row_start_time + row_duration
+    return [period for period in break_periods if period.start_time < row_end_time and period.end_time > row_start_time]
+
+
+# ——— render context ———
 
 def _build_render_context(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> RenderContext:
     skin = load_standard_skin()
@@ -273,12 +420,8 @@ def _build_render_context(beatmap: Beatmap, hit_objects: list[StandardHitObject]
         slider_follow_size=max(1, round(settings.circle_diameter * 2.4 * frame_layout.scale)),
         slider_ball_size=max(1, round(settings.circle_diameter * 1.15 * frame_layout.scale)),
         cache=RenderCache(
-            resized_alpha={},
-            tinted={},
-            digit_crops={},
-            slider_data={},
-            slider_body_layers={},
-            slider_body_alpha_layers={},
+            resized_alpha={}, tinted={}, digit_crops={},
+            slider_data={}, slider_body_layers={}, slider_body_alpha_layers={},
             rotated_reverse_arrows={},
         ),
     )
@@ -315,17 +458,14 @@ def _build_visible_indexes_by_snapshot(
 def _build_render_settings(beatmap: Beatmap) -> RenderSettings:
     circle_size = float(beatmap.difficulty["CircleSize"])
     approach_rate = float(beatmap.difficulty["ApproachRate"])
-    # stable 的物件半径由 CS 映射而来，并带一个历史兼容用的 rounding allowance。
     scale = (1.0 - 0.7 * ((circle_size - 5.0) / 5.0)) / 2.0 * BROKEN_GAMEFIELD_ROUNDING_ALLOWANCE
     circle_radius = OBJECT_RADIUS * scale
     circle_diameter = max(1, round(circle_radius * 2))
     preempt_ms = _difficulty_range_int(approach_rate, 1800, 1200, 450)
     fade_in_ms = 400 * min(1, preempt_ms / 450)
     return RenderSettings(
-        circle_radius=circle_radius,
-        circle_diameter=circle_diameter,
-        preempt_ms=preempt_ms,
-        fade_in_ms=fade_in_ms,
+        circle_radius=circle_radius, circle_diameter=circle_diameter,
+        preempt_ms=preempt_ms, fade_in_ms=fade_in_ms,
     )
 
 
@@ -350,12 +490,29 @@ def _build_frame_layout() -> FrameLayout:
     )
 
 
+def _build_combo_info(hit_objects: list[StandardHitObject], combo_colors: list[tuple[int, int, int]]) -> dict[int, ComboInfo]:
+    combo_info: dict[int, ComboInfo] = {}
+    color_index = 0
+    number = 0
+    previous_was_spinner = False
+
+    for index, hit_object in enumerate(hit_objects):
+        starts_combo = index == 0 or previous_was_spinner or (hit_object.new_combo and not (hit_object.hit_type & 8))
+        if starts_combo:
+            if index > 0:
+                color_index = (color_index + hit_object.combo_offset + 1) % len(combo_colors)
+            number = 1
+        else:
+            number += 1
+
+        combo_info[index] = ComboInfo(color=combo_colors[color_index], number=number)
+        previous_was_spinner = bool(hit_object.hit_type & 8)
+
+    return combo_info
+
+
 def _build_png_canvas_size() -> tuple[int, int]:
-    width = (
-        HORIZONTAL_PAGE_MARGIN * 2
-        + PNG_IMAGES_PER_ROW * IMAGE_WIDTH
-        + (PNG_IMAGES_PER_ROW - 1) * INTRA_ROW_IMAGE_GAP
-    )
+    width = HORIZONTAL_PAGE_MARGIN * 2 + PNG_IMAGES_PER_ROW * IMAGE_WIDTH + (PNG_IMAGES_PER_ROW - 1) * INTRA_ROW_IMAGE_GAP
     row_height = IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
     height = VERTICAL_PAGE_MARGIN * 2 + PNG_ROW_COUNT * row_height + (PNG_ROW_COUNT - 1) * INTER_ROW_GAP
     return width, height
@@ -363,11 +520,7 @@ def _build_png_canvas_size() -> tuple[int, int]:
 
 def _build_gif_canvas_size() -> tuple[int, int]:
     row_height = IMAGE_HEIGHT + TIME_LABEL_TOP_GAP + TIME_LABEL_HEIGHT
-    width = (
-        HORIZONTAL_PAGE_MARGIN * 2
-        + GIF_IMAGES_PER_ROW * IMAGE_WIDTH
-        + (GIF_IMAGES_PER_ROW - 1) * GIF_GRID_GAP
-    )
+    width = HORIZONTAL_PAGE_MARGIN * 2 + GIF_IMAGES_PER_ROW * IMAGE_WIDTH + (GIF_IMAGES_PER_ROW - 1) * GIF_GRID_GAP
     height = VERTICAL_PAGE_MARGIN * 2 + GIF_ROW_COUNT * row_height + (GIF_ROW_COUNT - 1) * GIF_GRID_GAP
     return width, height
 
@@ -381,69 +534,32 @@ def _gif_frame_origin(segment_index: int) -> tuple[int, int]:
     return x, y
 
 
-def _build_combo_info(
-    hit_objects: list[StandardHitObject],
-    combo_colors: list[tuple[int, int, int]],
-) -> dict[int, ComboInfo]:
-    combo_info: dict[int, ComboInfo] = {}
-    color_index = 0
-    number = 0
-    previous_was_spinner = False
-
-    for index, hit_object in enumerate(hit_objects):
-        # 新 combo 从首个物件、spinner 后或 new_combo 位标志开始。
-        starts_combo = index == 0 or previous_was_spinner or (hit_object.new_combo and not _is_spinner(hit_object))
-        if starts_combo:
-            if index > 0:
-                color_index = (color_index + hit_object.combo_offset + 1) % len(combo_colors)
-            number = 1
-        else:
-            number += 1
-
-        combo_info[index] = ComboInfo(color=combo_colors[color_index], number=number)
-        previous_was_spinner = _is_spinner(hit_object)
-
-    return combo_info
-
+# ——— frame rendering ———
 
 def _render_frame(
     context: RenderContext,
     snapshot_time: int,
     break_periods: tuple[BreakPeriod, ...],
-    visible_indexes: tuple[int, ...] | None = None,
+    visible_indexes: tuple[int, ...],
 ) -> Image.Image:
     frame = Image.new("RGBA", (IMAGE_WIDTH, IMAGE_HEIGHT), IMAGE_BACKGROUND_COLOR)
     draw = ImageDraw.Draw(frame)
     draw.rectangle((0, 0, LEFT_PANEL_WIDTH, IMAGE_HEIGHT), fill=LEFT_PANEL_BACKGROUND_COLOR)
 
-    if visible_indexes is None:
-        visible_indexes = tuple(
-            index
-            for index, hit_object in enumerate(context.hit_objects)
-            if _is_visible(hit_object, snapshot_time, context.settings.preempt_ms)
-        )
-
-    # 后出现的物件先绘制，保证当前最接近击打的物件位于上层。
     for index in visible_indexes:
         hit_object = context.hit_objects[index]
         combo = context.combo_info[index]
-        if _is_spinner(hit_object):
+        if hit_object.hit_type & 8:
             _draw_spinner(frame, context, hit_object, snapshot_time)
-        elif _is_slider(hit_object):
+        elif hit_object.hit_type & 2:
             _draw_slider(frame, context, hit_object, combo, snapshot_time)
         else:
             _draw_hit_circle(frame, context, hit_object, combo, snapshot_time)
 
     for index in visible_indexes:
         hit_object = context.hit_objects[index]
-        if not _is_spinner(hit_object):
-            _draw_approach_circle(
-                frame,
-                context,
-                hit_object,
-                context.combo_info[index].color,
-                snapshot_time,
-            )
+        if not (hit_object.hit_type & 8):
+            _draw_approach_circle(frame, context, hit_object, context.combo_info[index].color, snapshot_time)
 
     current_break = _current_break_period(break_periods, snapshot_time)
     if current_break is not None:
@@ -452,63 +568,41 @@ def _render_frame(
     return frame
 
 
-def _is_visible(hit_object: StandardHitObject, snapshot_time: int, preempt_ms: int) -> bool:
-    lifetime_start = hit_object.start_time - preempt_ms
-    lifetime_end = _visible_end_time(hit_object)
-    return lifetime_start <= snapshot_time <= lifetime_end
-
-
 def _visible_end_time(hit_object: StandardHitObject) -> int:
-    if _is_slider(hit_object):
+    if hit_object.hit_type & 2:
         return hit_object.end_time + SLIDER_FADE_OUT_MS
-    if _is_spinner(hit_object):
+    if hit_object.hit_type & 8:
         return hit_object.end_time + SPINNER_FADE_OUT_MS
     return hit_object.start_time + POST_HIT_FADE_MS
 
 
+# ——— hit circle ———
+
 def _draw_hit_circle(
-    frame: Image.Image,
-    context: RenderContext,
-    hit_object: StandardHitObject,
-    combo: ComboInfo,
-    snapshot_time: int,
+    frame: Image.Image, context: RenderContext,
+    hit_object: StandardHitObject, combo: ComboInfo, snapshot_time: int,
 ) -> None:
     alpha = _object_alpha(hit_object.start_time, hit_object.start_time, snapshot_time, context.settings)
     center = _to_frame_point(hit_object.x, hit_object.y, context.frame_layout)
     _draw_circle_piece(frame, context, center, combo.color, alpha, str(combo.number))
 
 
+# ——— slider ———
+
 def _draw_slider(
-    frame: Image.Image,
-    context: RenderContext,
-    hit_object: StandardHitObject,
-    combo: ComboInfo,
-    snapshot_time: int,
+    frame: Image.Image, context: RenderContext,
+    hit_object: StandardHitObject, combo: ComboInfo, snapshot_time: int,
 ) -> None:
     alpha = _object_alpha(hit_object.start_time, hit_object.end_time, snapshot_time, context.settings)
     slider_data = _get_slider_render_data(hit_object, context)
     snaked_start, snaked_end = _slider_snaked_range(hit_object, snapshot_time, context.settings)
     if _is_full_slider_body(snaked_start, snaked_end):
-        _draw_cached_slider_body(
-            frame,
-            context,
-            hit_object,
-            slider_data.frame_path.points,
-            context.skin.slider_border,
-            context.skin.slider_track,
-            alpha,
-        )
+        _draw_cached_slider_body(frame, context, hit_object, slider_data.frame_path.points,
+                                 context.skin.slider_border, context.skin.slider_track, alpha)
     else:
         visible_path = slice_path(slider_data.frame_path, snaked_start, snaked_end)
-        _draw_slider_body(
-            frame,
-            visible_path,
-            context.slider_body_width,
-            context.slider_border_width,
-            context.skin.slider_border,
-            context.skin.slider_track,
-            alpha,
-        )
+        _draw_slider_body(frame, visible_path, context.slider_body_width, context.slider_border_width,
+                          context.skin.slider_border, context.skin.slider_track, alpha)
 
     _draw_slider_reverse_arrows(frame, context, slider_data, hit_object, snapshot_time, snaked_start, snaked_end, alpha)
     _draw_slider_ball(frame, context, slider_data, hit_object, snapshot_time, alpha)
@@ -517,30 +611,23 @@ def _draw_slider(
         _draw_circle_piece(frame, context, slider_data.head_center, combo.color, head_alpha, str(combo.number))
 
 
-def _slider_snaked_range(
-    hit_object: StandardHitObject,
-    snapshot_time: int,
-    settings: RenderSettings,
-) -> tuple[float, float]:
+def _slider_snaked_range(hit_object: StandardHitObject, snapshot_time: int, settings: RenderSettings) -> tuple[float, float]:
     span_count = max(1, hit_object.slider_repeats)
     start = 0.0
     end = 1.0
 
     if snapshot_time < hit_object.start_time:
         if SNAKING_IN_SLIDERS:
-            # slider 出现前只展示从头部逐渐展开的路径。
             snake_start = hit_object.start_time - settings.preempt_ms
             end = max(0.0, min(1.0, (snapshot_time - snake_start) / (settings.preempt_ms / 3)))
         return start, end
 
-    # 结束后的淡出沿用结束瞬间的 snaking 形态，避免 slider 在下一帧闪回整条路径。
     effective_time = min(snapshot_time, hit_object.end_time)
     completion = max(0.0, min(1.0, (effective_time - hit_object.start_time) / max(1, hit_object.end_time - hit_object.start_time)))
     span = min(span_count - 1, int(completion * span_count))
     span_progress = _slider_path_progress(span_count, completion)
 
     if span >= span_count - 1 and SNAKING_OUT_SLIDERS:
-        # 最后一段开启 snaking out 时，根据当前方向裁掉已经走过的一端。
         if span % 2 == 1:
             end = span_progress
         else:
@@ -549,24 +636,20 @@ def _slider_snaked_range(
     return start, end
 
 
-def _draw_spinner(
-    frame: Image.Image,
-    context: RenderContext,
-    hit_object: StandardHitObject,
-    snapshot_time: int,
-) -> None:
+# ——— spinner ———
+
+def _draw_spinner(frame: Image.Image, context: RenderContext, hit_object: StandardHitObject, snapshot_time: int) -> None:
     alpha = _object_alpha(hit_object.start_time, hit_object.end_time, snapshot_time, context.settings)
     center = _to_frame_point(PLAYFIELD_WIDTH / 2, PLAYFIELD_HEIGHT / 2, context.frame_layout)
     sprite = _resize_with_alpha(context.skin.spinner_circle, context.spinner_size, alpha, context.cache)
     frame.alpha_composite(sprite, (round(center[0] - sprite.width / 2), round(center[1] - sprite.height / 2)))
 
 
+# ——— approach circle ———
+
 def _draw_approach_circle(
-    frame: Image.Image,
-    context: RenderContext,
-    hit_object: StandardHitObject,
-    color: tuple[int, int, int],
-    snapshot_time: int,
+    frame: Image.Image, context: RenderContext,
+    hit_object: StandardHitObject, color: tuple[int, int, int], snapshot_time: int,
 ) -> None:
     if snapshot_time >= hit_object.start_time:
         return
@@ -581,14 +664,10 @@ def _draw_approach_circle(
     frame.alpha_composite(sprite, (round(center[0] - sprite.width / 2), round(center[1] - sprite.height / 2)))
 
 
-def _object_alpha(
-    start_time: int,
-    end_time: int,
-    snapshot_time: int,
-    settings: RenderSettings,
-) -> float:
+# ——— alpha / timing helpers ———
+
+def _object_alpha(start_time: int, end_time: int, snapshot_time: int, settings: RenderSettings) -> float:
     if snapshot_time < start_time:
-        # preempt 阶段按 fade-in 时间从透明过渡到完整可见。
         fade_start = start_time - settings.preempt_ms
         return max(0.0, min(1.0, (snapshot_time - fade_start) / settings.fade_in_ms))
     if snapshot_time <= end_time:
@@ -597,11 +676,8 @@ def _object_alpha(
 
 
 def _slider_head_alpha(
-    hit_object: StandardHitObject,
-    snapshot_time: int,
-    settings: RenderSettings,
-    snaked_start: float,
-    snaked_end: float,
+    hit_object: StandardHitObject, snapshot_time: int,
+    settings: RenderSettings, snaked_start: float, snaked_end: float,
 ) -> float:
     if snaked_start > 0.001 or snaked_end <= 0.001:
         return 0.0
@@ -612,13 +688,22 @@ def _slider_head_alpha(
     return 0.0
 
 
+def _slider_path_progress(span_count: int, completion: float) -> float:
+    span = min(span_count - 1, int(completion * span_count))
+    progress = (completion * span_count) % 1
+    if completion >= 1:
+        progress = 1
+    if span % 2 == 1:
+        progress = 1 - progress
+    return progress
+
+
+# ——— slider ball ———
+
 def _draw_slider_ball(
-    frame: Image.Image,
-    context: RenderContext,
-    slider_data: SliderRenderData,
-    hit_object: StandardHitObject,
-    snapshot_time: int,
-    alpha: float,
+    frame: Image.Image, context: RenderContext,
+    slider_data: SliderRenderData, hit_object: StandardHitObject,
+    snapshot_time: int, alpha: float,
 ) -> None:
     if not (hit_object.start_time <= snapshot_time <= hit_object.end_time):
         return
@@ -632,23 +717,12 @@ def _draw_slider_ball(
     frame.alpha_composite(ball, (round(center[0] - ball.width / 2), round(center[1] - ball.height / 2)))
 
 
-def _slider_path_progress(span_count: int, completion: float) -> float:
-    span = min(span_count - 1, int(completion * span_count))
-    progress = (completion * span_count) % 1
-    if completion >= 1:
-        progress = 1
-    if span % 2 == 1:
-        progress = 1 - progress
-    return progress
-
+# ——— circle piece (hitcircle + overlay + number) ———
 
 def _draw_circle_piece(
-    frame: Image.Image,
-    context: RenderContext,
-    center: tuple[float, float],
-    color: tuple[int, int, int],
-    alpha: float,
-    number: str | None,
+    frame: Image.Image, context: RenderContext,
+    center: tuple[float, float], color: tuple[int, int, int],
+    alpha: float, number: str | None,
 ) -> None:
     hitcircle = _tint_sprite(context.skin.hitcircle, color, alpha, context.frame_circle_diameter, context.cache)
     overlay = _resize_with_alpha(context.skin.hitcircle_overlay, context.frame_circle_diameter, alpha, context.cache)
@@ -660,12 +734,9 @@ def _draw_circle_piece(
 
 
 def _draw_number(
-    frame: Image.Image,
-    context: RenderContext,
-    number: str,
-    center: tuple[float, float],
-    circle_diameter: int,
-    alpha: float,
+    frame: Image.Image, context: RenderContext,
+    number: str, center: tuple[float, float],
+    circle_diameter: int, alpha: float,
 ) -> None:
     digit_height = max(1, round(circle_diameter * 0.52))
     digit_images = [_resize_digit(context.skin.digits[digit], digit_height, alpha, context.cache) for digit in number]
@@ -689,48 +760,29 @@ def _resize_digit(sprite: Image.Image, height: int, alpha: float, cache: RenderC
     return _resize_with_alpha(cropped, (width, height), alpha, cache)
 
 
+# ——— slider body rendering ———
+
 def _draw_slider_body(
-    frame: Image.Image,
-    points: list[tuple[float, float]],
-    width: int,
-    border_width: int,
-    border_color: tuple[int, int, int],
-    track_color: tuple[int, int, int],
-    alpha: float,
+    frame: Image.Image, points: list[tuple[float, float]],
+    width: int, border_width: int,
+    border_color: tuple[int, int, int], track_color: tuple[int, int, int], alpha: float,
 ) -> None:
     if len(points) < 2:
         return
-
     layer = _render_slider_body_layer(points, width, border_width, border_color, track_color, _alpha_to_byte(alpha))
     frame.alpha_composite(layer.image, layer.offset)
 
 
 def _draw_cached_slider_body(
-    frame: Image.Image,
-    context: RenderContext,
-    hit_object: StandardHitObject,
-    points: tuple[tuple[float, float], ...],
-    border_color: tuple[int, int, int],
-    track_color: tuple[int, int, int],
-    alpha: float,
+    frame: Image.Image, context: RenderContext,
+    hit_object: StandardHitObject, points: tuple[tuple[float, float], ...],
+    border_color: tuple[int, int, int], track_color: tuple[int, int, int], alpha: float,
 ) -> None:
-    body_key = (
-        hit_object,
-        context.slider_body_width,
-        context.slider_border_width,
-        border_color,
-        track_color,
-    )
+    body_key = (hit_object, context.slider_body_width, context.slider_border_width, border_color, track_color)
     layer = context.cache.slider_body_layers.get(body_key)
     if layer is None:
-        layer = _render_slider_body_layer(
-            points,
-            context.slider_body_width,
-            context.slider_border_width,
-            border_color,
-            track_color,
-            255,
-        )
+        layer = _render_slider_body_layer(points, context.slider_body_width, context.slider_border_width,
+                                          border_color, track_color, 255)
         context.cache.slider_body_layers[body_key] = layer
 
     alpha_key = _alpha_to_byte(alpha)
@@ -750,11 +802,8 @@ def _draw_cached_slider_body(
 
 def _render_slider_body_layer(
     points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
-    width: int,
-    border_width: int,
-    border_color: tuple[int, int, int],
-    track_color: tuple[int, int, int],
-    alpha_byte: int,
+    width: int, border_width: int,
+    border_color: tuple[int, int, int], track_color: tuple[int, int, int], alpha_byte: int,
 ) -> CachedLayer:
     scale = SLIDER_BODY_SUPERSAMPLE
     shadow_width = max(1, width + border_width)
@@ -766,11 +815,7 @@ def _render_slider_body_layer(
     right = min(IMAGE_WIDTH, math.ceil(max(xs) + pad))
     bottom = min(IMAGE_HEIGHT, math.ceil(max(ys) + pad))
 
-    layer = Image.new(
-        "RGBA",
-        (max(1, (right - left) * scale), max(1, (bottom - top) * scale)),
-        (0, 0, 0, 0),
-    )
+    layer = Image.new("RGBA", (max(1, (right - left) * scale), max(1, (bottom - top) * scale)), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     scaled_points = [((x - left) * scale, (y - top) * scale) for x, y in points]
     accent_width = max(1, round(width * (1 - SLIDER_LEGACY_BORDER_PORTION)))
@@ -781,7 +826,6 @@ def _render_slider_body_layer(
     middle_track = _mix_rgb(outer_track, inner_track, 0.5)
     alpha = alpha_byte / 255
 
-    # legacy slider body 用多层粗线叠出阴影、边框和轨道高光。
     _draw_round_path(draw, scaled_points, shadow_width * scale, (0, 0, 0, round(255 * alpha * SLIDER_LEGACY_SHADOW_ALPHA)))
     _draw_round_path(draw, scaled_points, width * scale, (*border_color, round(255 * alpha)))
     _draw_round_path(draw, scaled_points, accent_width * scale, (*outer_track, round(255 * alpha * SLIDER_LEGACY_TRACK_ALPHA)))
@@ -791,50 +835,8 @@ def _render_slider_body_layer(
     return CachedLayer(resized_layer, (left, top))
 
 
-def _get_slider_render_data(hit_object: StandardHitObject, context: RenderContext) -> SliderRenderData:
-    cached = context.cache.slider_data.get(hit_object)
-    if cached is not None:
-        return cached
-
-    world_path = build_slider_path(hit_object)
-    frame_points = tuple(_to_frame_point(x, y, context.frame_layout) for x, y in world_path.points)
-    frame_path = build_path(frame_points)
-    reverse_centers: list[tuple[float, float]] = []
-    reverse_angles: list[float] = []
-    for repeat_index in range(1, hit_object.slider_repeats):
-        if repeat_index % 2 == 1:
-            center = frame_path.points[-1]
-            # 奇数折返位于滑条尾端，箭头指向滑条尾部切线反方向
-            dx = frame_path.points[-2][0] - center[0]
-            dy = frame_path.points[-2][1] - center[1]
-        else:
-            center = frame_path.points[0]
-            # 偶数折返位于滑条头端，箭头指向滑条头部切线方向
-            dx = frame_path.points[1][0] - center[0]
-            dy = frame_path.points[1][1] - center[1]
-        reverse_centers.append(center)
-        reverse_angles.append(math.atan2(dy, dx))
-    slider_data = SliderRenderData(
-        world_path=world_path,
-        frame_path=frame_path,
-        head_center=frame_path.points[0],
-        reverse_centers=tuple(reverse_centers),
-        reverse_angles=tuple(reverse_angles),
-    )
-    context.cache.slider_data[hit_object] = slider_data
-    return slider_data
-
-
-def _is_full_slider_body(snaked_start: float, snaked_end: float) -> bool:
-    return snaked_start <= 0.001 and snaked_end >= 0.999
-
-
-def _draw_round_path(
-    draw: ImageDraw.ImageDraw,
-    points: list[tuple[float, float]],
-    width: int,
-    color: tuple[int, int, int, int],
-) -> None:
+def _draw_round_path(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]],
+                     width: int, color: tuple[int, int, int, int]) -> None:
     draw.line(points, fill=color, width=width, joint="curve")
     radius = width / 2
     for x, y in points:
@@ -850,23 +852,52 @@ def _legacy_lighten(color: tuple[int, int, int], amount: float) -> tuple[int, in
     return tuple(min(255, round(channel * (1 + 0.5 * amount) + 255 * amount)) for channel in color)
 
 
-def _mix_rgb(
-    first: tuple[int, int, int],
-    second: tuple[int, int, int],
-    amount: float,
-) -> tuple[int, int, int]:
+def _mix_rgb(first: tuple[int, int, int], second: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
     return tuple(round(first[index] * (1 - amount) + second[index] * amount) for index in range(3))
 
 
+# ——— slider data & helpers ———
+
+def _get_slider_render_data(hit_object: StandardHitObject, context: RenderContext) -> SliderRenderData:
+    cached = context.cache.slider_data.get(hit_object)
+    if cached is not None:
+        return cached
+
+    world_path = build_slider_path(hit_object)
+    frame_points = tuple(_to_frame_point(x, y, context.frame_layout) for x, y in world_path.points)
+    frame_path = build_path(frame_points)
+    reverse_centers: list[tuple[float, float]] = []
+    reverse_angles: list[float] = []
+    for repeat_index in range(1, hit_object.slider_repeats):
+        if repeat_index % 2 == 1:
+            center = frame_path.points[-1]
+            dx = frame_path.points[-2][0] - center[0]
+            dy = frame_path.points[-2][1] - center[1]
+        else:
+            center = frame_path.points[0]
+            dx = frame_path.points[1][0] - center[0]
+            dy = frame_path.points[1][1] - center[1]
+        reverse_centers.append(center)
+        reverse_angles.append(math.atan2(dy, dx))
+    slider_data = SliderRenderData(
+        world_path=world_path, frame_path=frame_path,
+        head_center=frame_path.points[0],
+        reverse_centers=tuple(reverse_centers), reverse_angles=tuple(reverse_angles),
+    )
+    context.cache.slider_data[hit_object] = slider_data
+    return slider_data
+
+
+def _is_full_slider_body(snaked_start: float, snaked_end: float) -> bool:
+    return snaked_start <= 0.001 and snaked_end >= 0.999
+
+
+# ——— reverse arrows ———
+
 def _draw_slider_reverse_arrows(
-    frame: Image.Image,
-    context: RenderContext,
-    slider_data: SliderRenderData,
-    hit_object: StandardHitObject,
-    snapshot_time: int,
-    snaked_start: float,
-    snaked_end: float,
-    alpha: float,
+    frame: Image.Image, context: RenderContext,
+    slider_data: SliderRenderData, hit_object: StandardHitObject,
+    snapshot_time: int, snaked_start: float, snaked_end: float, alpha: float,
 ) -> None:
     if hit_object.slider_repeats <= 1:
         return
@@ -884,7 +915,6 @@ def _draw_slider_reverse_arrows(
             continue
 
         if snapshot_time < hit_object.start_time:
-            # 预出现阶段仅第一个折返箭头可能可见（由 snaking 控制位置）
             if repeat_index > 1:
                 continue
             repeat_alpha = 1.0
@@ -908,13 +938,13 @@ def _draw_slider_reverse_arrows(
         angle_key = round(angle_deg)
         rotated = context.cache.rotated_reverse_arrows.get(angle_key)
         if rotated is None:
-            rotated = context.skin.reverse_arrow.rotate(
-                angle_deg, expand=True, resample=Image.Resampling.BICUBIC
-            )
+            rotated = context.skin.reverse_arrow.rotate(angle_deg, expand=True, resample=Image.Resampling.BICUBIC)
             context.cache.rotated_reverse_arrows[angle_key] = rotated
         arrow = _resize_with_alpha(rotated, context.reverse_arrow_size, effective_alpha, context.cache)
         frame.alpha_composite(arrow, (round(center[0] - arrow.width / 2), round(center[1] - arrow.height / 2)))
 
+
+# ——— sprite helpers ———
 
 def _target_size(size: int | tuple[int, int]) -> tuple[int, int]:
     if isinstance(size, int):
@@ -926,13 +956,8 @@ def _alpha_to_byte(alpha: float) -> int:
     return max(0, min(255, round(alpha * 255)))
 
 
-def _tint_sprite(
-    sprite: Image.Image,
-    color: tuple[int, int, int],
-    alpha: float,
-    size: int | tuple[int, int],
-    cache: RenderCache,
-) -> Image.Image:
+def _tint_sprite(sprite: Image.Image, color: tuple[int, int, int], alpha: float,
+                 size: int | tuple[int, int], cache: RenderCache) -> Image.Image:
     target_size = _target_size(size)
     alpha_key = _alpha_to_byte(alpha)
     key = (id(sprite), target_size, color, alpha_key)
@@ -948,12 +973,8 @@ def _tint_sprite(
     return tinted
 
 
-def _resize_with_alpha(
-    sprite: Image.Image,
-    size: int | tuple[int, int],
-    alpha: float,
-    cache: RenderCache,
-) -> Image.Image:
+def _resize_with_alpha(sprite: Image.Image, size: int | tuple[int, int],
+                       alpha: float, cache: RenderCache) -> Image.Image:
     target_size = _target_size(size)
     alpha_key = _alpha_to_byte(alpha)
     key = (id(sprite), target_size, alpha_key)
@@ -969,27 +990,17 @@ def _resize_with_alpha(
     return resized
 
 
-def _to_frame_point(
-    x: float,
-    y: float,
-    frame_layout: FrameLayout,
-) -> tuple[float, float]:
-    return (
-        frame_layout.playfield_left + x * frame_layout.scale,
-        frame_layout.playfield_top + y * frame_layout.scale,
-    )
+def _to_frame_point(x: float, y: float, frame_layout: FrameLayout) -> tuple[float, float]:
+    return (frame_layout.playfield_left + x * frame_layout.scale,
+            frame_layout.playfield_top + y * frame_layout.scale)
 
+
+# ——— time labels ———
 
 def _draw_time_label(
-    draw: ImageDraw.ImageDraw,
-    label: str,
-    x: int,
-    y: int,
-    font: ImageFont.ImageFont,
-    note_font: ImageFont.ImageFont,
-    note: str | None,
-    label_color: tuple[int, int, int, int],
-    note_color: tuple[int, int, int, int],
+    draw: ImageDraw.ImageDraw, label: str, x: int, y: int,
+    font: ImageFont.ImageFont, note_font: ImageFont.ImageFont,
+    note: str | None, label_color: tuple[int, int, int, int], note_color: tuple[int, int, int, int],
 ) -> None:
     _draw_centered_text(draw, label, x, y, font, label_color)
     if note is not None:
@@ -998,14 +1009,8 @@ def _draw_time_label(
         _draw_centered_text(draw, note, x, note_y, note_font, note_color)
 
 
-def _draw_centered_text(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    x: int,
-    y: int,
-    font: ImageFont.ImageFont,
-    color: tuple[int, int, int, int],
-) -> None:
+def _draw_centered_text(draw: ImageDraw.ImageDraw, text: str, x: int, y: int,
+                        font: ImageFont.ImageFont, color: tuple[int, int, int, int]) -> None:
     text_box = draw.textbbox((0, 0), text, font=font)
     text_width = text_box[2] - text_box[0]
     text_x = x + (IMAGE_WIDTH - text_width) / 2
@@ -1023,22 +1028,23 @@ def _build_gif_time_label(start_time: int) -> str:
     return f"{_format_time(start_time)} - {_format_time(end_time)}"
 
 
-def _current_break_period(
-    break_periods: tuple[BreakPeriod, ...],
-    snapshot_time: int,
-) -> BreakPeriod | None:
+def _format_time(time_ms: int) -> str:
+    minutes = time_ms // 60000
+    seconds = (time_ms % 60000) // 1000
+    milliseconds = time_ms % 1000
+    return f"{minutes:02d}:{seconds:02d}:{milliseconds:03d}"
+
+
+# ——— break overlay ———
+
+def _current_break_period(break_periods: tuple[BreakPeriod, ...], snapshot_time: int) -> BreakPeriod | None:
     for period in break_periods:
         if _break_overlay_alpha(period, snapshot_time) > 0:
             return period
     return None
 
 
-def _draw_break_overlay(
-    frame: Image.Image,
-    break_period: BreakPeriod,
-    snapshot_time: int,
-) -> None:
-    """绘制 break overlay：中央倒计时和剩余时间条。"""
+def _draw_break_overlay(frame: Image.Image, break_period: BreakPeriod, snapshot_time: int) -> None:
     alpha = _break_overlay_alpha(break_period, snapshot_time)
     if alpha <= 0:
         return
@@ -1057,22 +1063,18 @@ def _draw_break_overlay(
     counter_label = str(remaining_seconds)
     counter_box = draw.textbbox((0, 0), counter_label, font=counter_font)
     counter_y = center_y - 15 - (counter_box[3] - counter_box[1])
-    _draw_centered_text(draw, counter_label, 0, counter_y, counter_font, _with_alpha(BREAK_OVERLAY_COLOR, alpha))
+    counter_color = (BREAK_OVERLAY_COLOR[0], BREAK_OVERLAY_COLOR[1], BREAK_OVERLAY_COLOR[2], round(BREAK_OVERLAY_COLOR[3] * alpha))
+    _draw_centered_text(draw, counter_label, 0, counter_y, counter_font, counter_color)
 
     break_label = f"Break {_format_time(break_period.start_time)} - {_format_time(break_period.end_time)}"
     info_y = center_y + BREAK_OVERLAY_INFO_TOP_GAP
-    _draw_centered_text(draw, break_label, 0, info_y, info_font, _with_alpha(BREAK_OVERLAY_INFO_COLOR, alpha))
+    info_color = (BREAK_OVERLAY_INFO_COLOR[0], BREAK_OVERLAY_INFO_COLOR[1], BREAK_OVERLAY_INFO_COLOR[2], round(BREAK_OVERLAY_INFO_COLOR[3] * alpha))
+    _draw_centered_text(draw, break_label, 0, info_y, info_font, info_color)
     frame.alpha_composite(layer)
 
 
-def _draw_break_remaining_bar(
-    draw: ImageDraw.ImageDraw,
-    break_period: BreakPeriod,
-    snapshot_time: int,
-    center_x: float,
-    center_y: float,
-    alpha: float,
-) -> None:
+def _draw_break_remaining_bar(draw: ImageDraw.ImageDraw, break_period: BreakPeriod,
+                              snapshot_time: int, center_x: float, center_y: float, alpha: float) -> None:
     track_width = round(IMAGE_WIDTH * BREAK_OVERLAY_BAR_WIDTH_RATIO)
     track_height = BREAK_OVERLAY_BAR_HEIGHT
     track_left = center_x - track_width / 2
@@ -1097,15 +1099,8 @@ def _draw_break_arrows(draw: ImageDraw.ImageDraw, alpha: float) -> None:
         _draw_chevron(draw, center_x, center_y, 20, direction, color, 4)
 
 
-def _draw_chevron(
-    draw: ImageDraw.ImageDraw,
-    center_x: float,
-    center_y: float,
-    size: int,
-    direction: int,
-    color: tuple[int, int, int, int],
-    width: int,
-) -> None:
+def _draw_chevron(draw: ImageDraw.ImageDraw, center_x: float, center_y: float, size: int,
+                  direction: int, color: tuple[int, int, int, int], width: int) -> None:
     half = size / 2
     point = (center_x + direction * half, center_y)
     top = (center_x - direction * half, center_y - half)
@@ -1118,7 +1113,6 @@ def _break_overlay_alpha(break_period: BreakPeriod, snapshot_time: int) -> float
         return 0.0
     if snapshot_time < break_period.start_time or snapshot_time > break_period.end_time:
         return 0.0
-
     if snapshot_time < break_period.start_time + BREAK_FADE_DURATION_MS:
         return (snapshot_time - break_period.start_time) / BREAK_FADE_DURATION_MS
     if snapshot_time > break_period.end_time - BREAK_FADE_DURATION_MS:
@@ -1130,31 +1124,5 @@ def _break_remaining_bar_ratio(break_period: BreakPeriod, snapshot_time: int) ->
     effective_duration = break_period.end_time - BREAK_FADE_DURATION_MS - break_period.start_time
     if effective_duration <= 0:
         return 0.0
-
     remaining = break_period.end_time - BREAK_FADE_DURATION_MS - snapshot_time
     return max(0.0, min(1.0, remaining / effective_duration))
-
-
-def _with_alpha(color: tuple[int, int, int, int], alpha: float) -> tuple[int, int, int, int]:
-    return (color[0], color[1], color[2], round(color[3] * alpha))
-
-
-def _format_time(time_ms: int) -> str:
-    minutes = time_ms // 60000
-    seconds = (time_ms % 60000) // 1000
-    milliseconds = time_ms % 1000
-    return f"{minutes:02d}:{seconds:02d}:{milliseconds:03d}"
-
-
-def _get_standard_output_format() -> str:
-    if STANDARD_OUTPUT_FORMAT not in {"png", "gif"}:
-        raise ValueError('STANDARD_OUTPUT_FORMAT must be "png" or "gif"')
-    return STANDARD_OUTPUT_FORMAT
-
-
-def _is_slider(hit_object: StandardHitObject) -> bool:
-    return bool(hit_object.hit_type & 2)
-
-
-def _is_spinner(hit_object: StandardHitObject) -> bool:
-    return bool(hit_object.hit_type & 8)

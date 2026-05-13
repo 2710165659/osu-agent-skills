@@ -6,8 +6,40 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .errors import PreviewError
-from .models import Beatmap, ManiaHitObject, TimingPoint
+from ..errors import PreviewError
+from ..models import Beatmap, ManiaHitObject, TimingPoint
+from .config import (
+    BEAT_LINE,
+    BOTTOM_PADDING_MS,
+    COLUMN_GAP,
+    FIXED_COLUMN_COUNT_6_TO_10_MIN,
+    IMAGE_BACKGROUND,
+    LANE_BACKGROUND,
+    LANE_GAP,
+    LANE_SEPARATOR,
+    LANE_WIDTH,
+    LEFT_PANEL_BACKGROUND,
+    LEFT_PANEL_WIDTH,
+    MAX_AREA_HEIGHT_0_TO_1_MIN,
+    MAX_AREA_HEIGHT_1_TO_2_MIN,
+    MAX_AREA_HEIGHT_2_TO_3_MIN,
+    MAX_AREA_HEIGHT_3_TO_4_MIN,
+    MAX_AREA_HEIGHT_4_TO_5_MIN,
+    MAX_AREA_HEIGHT_5_TO_6_MIN,
+    MAX_SUPPORTED_DURATION_MS,
+    MEASURE_LINE,
+    NOTE_HEAD_HEIGHT,
+    NOTE_SIDE_PADDING,
+    PAGE_MARGIN_X,
+    PAGE_MARGIN_Y,
+    PIXELS_PER_MS,
+    RULER_TEXT,
+    SUBDIVISION_LINE,
+    SV_TEXT_COLOR,
+    SV_TEXT_FONT_SIZE,
+    TIME_LABEL_FONT_SIZE,
+    TOP_BUFFER,
+)
 
 LANE_COLOR_PALETTES = {
     1: ["#e9eef4"],
@@ -30,37 +62,6 @@ LANE_COLOR_PALETTES = {
     18: ["#bcdbf1", "#ccfcb2", "#e9eef4", "#ffe274", "#bcdbf1", "#e9eef4", "#ccfcb2", "#e9eef4", "#ffe274", "#ffe274", "#e9eef4", "#ccfcb2", "#e9eef4", "#bcdbf1", "#ffe274", "#e9eef4", "#ccfcb2", "#bcdbf1"],
 }
 
-PIXELS_PER_MS = 0.4  # 小节线间基础长度
-MAX_AREA_HEIGHT_0_TO_1_MIN = 4000  # [0, 1) 分钟最大区域高度
-MAX_AREA_HEIGHT_1_TO_2_MIN = 5500  # [1, 2) 分钟最大区域高度
-MAX_AREA_HEIGHT_2_TO_3_MIN = 7000  # [2, 3) 分钟最大区域高度
-MAX_AREA_HEIGHT_3_TO_4_MIN = 8500  # [3, 4) 分钟最大区域高度
-MAX_AREA_HEIGHT_4_TO_5_MIN = 10000  # [4, 5) 分钟最大区域高度
-MAX_AREA_HEIGHT_5_TO_6_MIN = 11500  # [5, 6) 分钟最大区域高度
-FIXED_COLUMN_COUNT_6_TO_10_MIN = 30  # [6, 10) 分钟固定列数
-MAX_SUPPORTED_DURATION_MS = 10 * 60 * 1000  # 支持渲染的最大谱面时长
-PAGE_MARGIN_X = 20  # 图片左右外边距
-PAGE_MARGIN_Y = 20  # 图片上下外边距
-LANE_WIDTH = 38  # 单个轨道宽度
-LANE_GAP = 0  # 轨道之间间距
-COLUMN_GAP = 100  # 列与列之间间距
-NOTE_HEAD_HEIGHT = 15  # note 头部高度
-BOTTOM_PADDING_MS = 2000  # 谱面底部额外预留时间
-TOP_BUFFER = NOTE_HEAD_HEIGHT  # 顶部额外缓冲高度
-LEFT_PANEL_WIDTH = 12  # 轨道左侧区域宽度
-LEFT_PANEL_BACKGROUND = (112, 112, 112, 255)  # 轨道左侧区域背景色
-IMAGE_BACKGROUND = (0, 0, 0, 255)  # 整体背景色
-LANE_BACKGROUND = (0, 0, 0, 255)  # 轨道背景色
-RULER_TEXT = (232, 232, 232, 255)  # 时间文字颜色
-MEASURE_LINE = (220, 220, 220, 96)  # 小节线颜色
-BEAT_LINE = (200, 200, 200, 72)  # 拍线颜色
-SUBDIVISION_LINE = (180, 180, 180, 48)  # 细分节拍线颜色
-LANE_SEPARATOR = (32, 32, 32, 255)  # 轨道分隔线颜色
-NOTE_SIDE_PADDING = 2  # note 左右内边距
-TIME_LABEL_FONT_SIZE = 20  # 时间标签字号
-SV_TEXT_COLOR = (95, 221, 108, 255)  # sv 文字显示颜色
-SV_TEXT_FONT_SIZE = 10  # sv 文字字号
-
 
 @dataclass(frozen=True)
 class TimingLine:
@@ -81,44 +82,34 @@ class RenderLayout:
     image_height: int
 
 
-def render_mania_preview(
-    beatmap: Beatmap,
-    output_path: Path,
-) -> Path:
-    # 将完整 mania 谱面渲染为单张图片，长谱面按列切分。
-    try:
-        key_count = int(float(beatmap.difficulty["CircleSize"]))
-        palette = LANE_COLOR_PALETTES[key_count]
-        font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
-        font_sv = ImageFont.load_default(size=SV_TEXT_FONT_SIZE)
-        beatmap_duration = max(hit_object.end_time for hit_object in beatmap.hit_objects)
-        chart_end_time = beatmap_duration + BOTTOM_PADDING_MS
-        timing_lines = _build_timing_lines(beatmap.timing_points, chart_end_time)
-        sv_changes = _build_sv_changes(beatmap.timing_points, chart_end_time)
-        layout = _build_layout(key_count, beatmap_duration, chart_end_time)
+def render_mania_grid(beatmap: Beatmap, output_path: Path) -> Path:
+    key_count = int(float(beatmap.difficulty["CircleSize"]))
+    palette = LANE_COLOR_PALETTES[key_count]
+    font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
+    font_sv = ImageFont.load_default(size=SV_TEXT_FONT_SIZE)
+    beatmap_duration = max(hit_object.end_time for hit_object in beatmap.hit_objects)
+    chart_end_time = beatmap_duration + BOTTOM_PADDING_MS
+    timing_lines = _build_timing_lines(beatmap.timing_points, chart_end_time)
+    sv_changes = _build_sv_changes(beatmap.timing_points, chart_end_time)
+    layout = _build_layout(key_count, beatmap_duration, chart_end_time)
 
-        image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
-        draw = ImageDraw.Draw(image)
+    image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
+    draw = ImageDraw.Draw(image)
 
-        for column_index in range(layout.column_count):
-            _draw_column_background(draw, key_count, column_index, layout)
+    for column_index in range(layout.column_count):
+        _draw_column_background(draw, key_count, column_index, layout)
 
-        for timing_line in timing_lines:
-            _draw_timing_line(draw, timing_line, layout, font_regular)
+    for timing_line in timing_lines:
+        _draw_timing_line(draw, timing_line, layout, font_regular)
 
-        for sv_change in sv_changes:
-            _draw_sv_indicator(draw, sv_change, layout, font_sv)
+    for sv_change in sv_changes:
+        _draw_sv_indicator(draw, sv_change, layout, font_sv)
 
-        for hit_object in beatmap.hit_objects:
-            _draw_hit_object(draw, hit_object, palette, layout)
+    for hit_object in beatmap.hit_objects:
+        _draw_hit_object(draw, hit_object, palette, layout)
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        image.save(output_path)
-        return output_path
-    except PreviewError:
-        raise
-    except (OSError, KeyError, ValueError, IndexError, ZeroDivisionError) as exc:
-        raise PreviewError("Failed to render preview.") from exc
+    image.save(output_path)
+    return output_path
 
 
 def _darken_hex(color: str, ratio: float) -> str:
@@ -130,7 +121,6 @@ def _darken_hex(color: str, ratio: float) -> str:
 def _build_layout(key_count: int, beatmap_duration: int, chart_end_time: int) -> RenderLayout:
     total_chart_height = max(1, math.ceil(chart_end_time * PIXELS_PER_MS))
     column_count = _calculate_column_count(beatmap_duration, total_chart_height)
-    # 按列数反推每列时间跨度，保证最终图片高度被限制在可读范围内。
     time_per_column = math.ceil(chart_end_time / column_count)
     column_height = math.ceil(time_per_column * PIXELS_PER_MS)
     total_column_height = TOP_BUFFER + column_height
@@ -155,7 +145,6 @@ def _calculate_column_count(beatmap_duration: int, total_chart_height: int) -> i
         raise PreviewError("songs longer than 10 minutes are not supported")
 
     if beatmap_duration >= 6 * 60 * 1000:
-        # 长谱固定列数，避免图片高度继续线性增长。
         return FIXED_COLUMN_COUNT_6_TO_10_MIN
 
     max_area_height = _resolve_max_area_height(beatmap_duration)
@@ -218,7 +207,6 @@ def _draw_timing_line(
     column_left = PAGE_MARGIN_X + column_index * (layout.column_width + COLUMN_GAP)
     lane_area_left = column_left + LEFT_PANEL_WIDTH
     chart_top = PAGE_MARGIN_Y + TOP_BUFFER
-    # mania 视图时间从下往上推进，所以时间越晚 y 越小。
     y = chart_top + layout.column_height - round(local_time * PIXELS_PER_MS)
 
     draw.line(
@@ -265,7 +253,6 @@ def _draw_hit_object(
         chart_bottom = chart_axis_top + layout.column_height
         lane_left = lane_area_left + hit_object.lane * (LANE_WIDTH + LANE_GAP) + NOTE_SIDE_PADDING
         lane_right = lane_left + LANE_WIDTH - NOTE_SIDE_PADDING * 2
-        # 长条可能跨列，逐列裁剪当前列实际需要绘制的时间片段。
         segment_start = max(hit_object.start_time, column_index * layout.time_per_column)
         segment_end = min(hit_object.end_time, (column_index + 1) * layout.time_per_column)
         y_start = chart_axis_top + layout.column_height - round(
@@ -302,7 +289,6 @@ def _draw_hit_object(
 
 
 def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -> list[TimingLine]:
-    # 只有红线 timing point 会生成可见的小节线和拍线。
     base_points = [point for point in timing_points if point.uninherited]
     if not base_points:
         return []
@@ -340,13 +326,11 @@ def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -
 
     ordered_unique: dict[int, TimingLine] = {}
     for timing_line in timing_lines:
-        # 多个 timing section 边界可能生成同一毫秒的线，后写入的保留即可。
         ordered_unique[timing_line.time] = timing_line
     return [ordered_unique[time] for time in sorted(ordered_unique)]
 
 
 def _build_sv_changes(timing_points: list[TimingPoint], chart_end_time: int) -> list[tuple[int, float]]:
-    # 从 inherited (绿线) timing points 提取 SV 变速点，过滤连续相同值。
     inherited = [
         point for point in timing_points
         if not point.uninherited and point.beat_length < 0 and 0 <= point.time <= chart_end_time

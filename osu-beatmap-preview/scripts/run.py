@@ -13,22 +13,16 @@ from scripts.beatmap_preview.service import generate_preview
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    def parse_bid(value: str) -> str:
-        # 兼容 --bid=2617355 和 --bid="2617355" 这类纯数字输入。
-        value = value.strip().strip("\"'")
-        if value.isdigit():
-            return value
-
-        # 兼容 osu! 链接格式，例如：
-        # https://osu.ppy.sh/beatmapsets/1197924#fruits/2617355
-        # https://osu.ppy.sh/b/2617355
-        bid = value.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
-        return bid if bid.isdigit() else value
-
     parser = argparse.ArgumentParser(
         description="Download an osu! beatmap and render a preview image."
     )
-    parser.add_argument("--bid", required=True, type=parse_bid, help="osu! beatmap id")
+    parser.add_argument("--bid", required=True, type=str, help="osu! beatmap id (numeric)")
+    parser.add_argument(
+        "--format", "--fmt",
+        choices=["png", "gif"],
+        default="png",
+        help="output format (default: png)",
+    )
     return parser
 
 
@@ -37,7 +31,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        result = generate_preview(args.bid, Path(__file__).resolve().parents[1])
+        result = generate_preview(args.bid, Path(__file__).resolve().parents[1], fmt=args.format)
     except PreviewError as exc:
         payload = json.dumps(
             {
@@ -59,4 +53,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

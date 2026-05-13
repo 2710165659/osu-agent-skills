@@ -5,20 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..errors import PreviewError
-
 STANDARD_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "standard"
-REQUIRED_SKIN_FILES = [
-    "skin.ini",
-    "hitcircle@2x.png",
-    "hitcircleoverlay@2x.png",
-    "approachcircle@2x.png",
-    "reversearrow@2x.png",
-    "sliderb0@2x.png",
-    "sliderfollowcircle@2x.png",
-    "spinner-circle@2x.png",
-    *[f"Fonts/default-{digit}@2x.png" for digit in range(10)],
-]
 
 
 @dataclass(frozen=True)
@@ -39,20 +26,8 @@ class StandardSkin:
 
 def load_standard_skin() -> StandardSkin:
     """加载随 skill 固定携带的 standard 皮肤资源。"""
-    for file_name in REQUIRED_SKIN_FILES:
-        asset_path = STANDARD_ASSET_DIR / file_name
-        if not asset_path.exists():
-            raise PreviewError(f"missing standard skin asset: {asset_path}")
-
     skin_config = _parse_skin_config(STANDARD_ASSET_DIR / "skin.ini")
     combo_colors = _parse_combo_colors(skin_config)
-    if "HitCircleOverlap" not in skin_config:
-        raise PreviewError("missing HitCircleOverlap in standard skin.ini")
-    if "SliderBorder" not in skin_config:
-        raise PreviewError("missing SliderBorder in standard skin.ini")
-    if "SliderTrackOverride" not in skin_config:
-        raise PreviewError("missing SliderTrackOverride in standard skin.ini")
-
     return StandardSkin(
         hitcircle=Image.open(STANDARD_ASSET_DIR / "hitcircle@2x.png").convert("RGBA"),
         hitcircle_overlay=Image.open(STANDARD_ASSET_DIR / "hitcircleoverlay@2x.png").convert("RGBA"),
@@ -89,8 +64,6 @@ def _parse_combo_colors(skin_config: dict[str, str]) -> list[tuple[int, int, int
     while f"Combo{index}" in skin_config:
         colors.append(_parse_rgb(skin_config[f"Combo{index}"]))
         index += 1
-    if not colors:
-        raise PreviewError("missing Combo colors in standard skin.ini")
     return colors
 
 

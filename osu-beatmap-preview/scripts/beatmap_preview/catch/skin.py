@@ -5,27 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..errors import PreviewError
-
 CATCH_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "catch"
-REQUIRED_SKIN_FILES = [
-    "skin.ini",
-    "fruit-pear@2x.png",
-    "fruit-pear-overlay@2x.png",
-    "fruit-grapes@2x.png",
-    "fruit-grapes-overlay@2x.png",
-    "fruit-apple@2x.png",
-    "fruit-apple-overlay@2x.png",
-    "fruit-orange@2x.png",
-    "fruit-orange-overlay@2x.png",
-    "fruit-drop@2x.png",
-    "fruit-drop-overlay@2x.png",
-    "fruit-bananas@2x.png",
-    "fruit-bananas-overlay@2x.png",
-    "fruit-catcher-idle-0@2x.png",
-]
-
-
 @dataclass(frozen=True)
 class CatchSkin:
     fruit_bases: dict[str, Image.Image]
@@ -42,19 +22,8 @@ class CatchSkin:
 
 def load_catch_skin() -> CatchSkin:
     """加载 catch 预览渲染所需的皮肤素材与颜色配置。"""
-    for file_name in REQUIRED_SKIN_FILES:
-        asset_path = CATCH_ASSET_DIR / file_name
-        if not asset_path.exists():
-            raise PreviewError(f"missing catch skin asset: {asset_path}")
-
     skin_config = _parse_skin_config(CATCH_ASSET_DIR / "skin.ini")
     combo_colors = _parse_combo_colors(skin_config)
-
-    if "HyperDash" not in skin_config:
-        raise PreviewError("missing HyperDash in catch skin.ini")
-    if "HyperDashFruit" not in skin_config:
-        raise PreviewError("missing HyperDashFruit in catch skin.ini")
-
     return CatchSkin(
         fruit_bases={
             "pear": Image.open(CATCH_ASSET_DIR / "fruit-pear@2x.png").convert("RGBA"),
@@ -92,10 +61,7 @@ def _parse_skin_config(skin_path: Path) -> dict[str, str]:
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
-        scoped_key = key.strip()
-        if current_section == "CatchTheBeat":
-            scoped_key = key.strip()
-        values[scoped_key] = value.strip()
+        values[key.strip()] = value.strip()
     return values
 
 
@@ -105,8 +71,6 @@ def _parse_combo_colors(skin_config: dict[str, str]) -> list[tuple[int, int, int
     while f"Combo{index}" in skin_config:
         colors.append(_parse_rgb(skin_config[f"Combo{index}"]))
         index += 1
-    if not colors:
-        raise PreviewError("missing Combo colors in catch skin.ini")
     return colors
 
 
