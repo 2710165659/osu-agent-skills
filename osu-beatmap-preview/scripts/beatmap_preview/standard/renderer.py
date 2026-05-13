@@ -60,8 +60,8 @@ BREAK_OVERLAY_INFO_FONT_SIZE = 18  # 图片中央 break 时间说明字号
 BREAK_OVERLAY_INFO_TOP_GAP = 14  # 剩余时间条与 break 时间说明之间的间距
 BREAK_OVERLAY_COLOR = (238, 238, 238, 255)  # break overlay 主文字颜色
 BREAK_OVERLAY_INFO_COLOR = (185, 185, 185, 255)  # break 时间说明颜色
-SLIDER_BORDER_WIDTH = 6  # slider 轨道边框宽度
-SLIDER_BODY_SUPERSAMPLE = 3  # slider body 临时高分辨率绘制倍数，减少曲线接缝
+SLIDER_BORDER_WIDTH = 10  # slider 轨道边框宽度 (osu! shadow 5px + border 7px = 12px ring)
+SLIDER_BODY_SUPERSAMPLE = 2  # slider body 临时高分辨率绘制倍数，减少曲线接缝
 SLIDER_LEGACY_BORDER_PORTION = 0.1875  # osu!stable legacy slider body 边框在半径中的占比
 SLIDER_LEGACY_TRACK_ALPHA = 0.7  # legacy slider track override 固定透明度
 SLIDER_LEGACY_SHADOW_ALPHA = 0.25  # legacy slider body 外侧阴影透明度
@@ -153,7 +153,7 @@ class RenderContext:
 
 # ——— public API ———
 
-def render_standard(beatmap: Beatmap, hit_objects: list[StandardHitObject], fmt: str) -> Image.Image | tuple[list[Image.Image], int, int]:
+def render_standard(beatmap: Beatmap, hit_objects: list[StandardHitObject], fmt: str) -> Image.Image | tuple:
     if fmt == "png":
         return _render_png_grid(beatmap, hit_objects)
     if fmt == "gif":
@@ -204,7 +204,7 @@ def _render_png_grid(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> 
 
 # ——— GIF ———
 
-def _render_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple[list[Image.Image], int, int]:
+def _render_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]):
     context = _build_render_context(beatmap, hit_objects)
     row_timings = _choose_row_start_times(
         beatmap=beatmap,
@@ -218,7 +218,6 @@ def _render_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple
     canvas_size = _build_gif_canvas_size()
     frame_count = max(1, round(GIF_DURATION_MS * GIF_FPS / 1000))
     frame_duration_ms = max(1, round(1000 / GIF_FPS))
-    frames: list[Image.Image] = []
     segment_snapshot_times = [
         tuple(row_timing.start_time + round(frame_index * 1000 / GIF_FPS) for frame_index in range(frame_count))
         for row_timing in row_timings
@@ -228,33 +227,34 @@ def _render_gif(beatmap: Beatmap, hit_objects: list[StandardHitObject]) -> tuple
         for snapshot_times in segment_snapshot_times
     ]
 
-    for frame_index in range(frame_count):
-        canvas = Image.new("RGBA", canvas_size, CANVAS_BACKGROUND_COLOR)
-        draw = ImageDraw.Draw(canvas)
+    def frame_generator():
+        for frame_index in range(frame_count):
+            canvas = Image.new("RGBA", canvas_size, CANVAS_BACKGROUND_COLOR)
+            draw = ImageDraw.Draw(canvas)
 
-        for segment_index, row_timing in enumerate(row_timings):
-            x, y = _gif_frame_origin(segment_index)
-            snapshot_time = segment_snapshot_times[segment_index][frame_index]
-            frame = _render_frame(
-                context=context,
-                snapshot_time=snapshot_time,
-                break_periods=row_timing.break_periods if row_timing.is_preview else (),
-                visible_indexes=segment_visible_indexes[segment_index][frame_index],
-            )
-            canvas.alpha_composite(frame, (x, y))
-            note = _build_time_label_note(row_timing)
-            is_preview_label = row_timing.is_preview
-            _draw_time_label(
-                draw, _build_gif_time_label(row_timing.start_time),
-                x, y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
-                font_regular, font_note, note,
-                PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_COLOR,
-                PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_NOTE_COLOR,
-            )
+            for segment_index, row_timing in enumerate(row_timings):
+                x, y = _gif_frame_origin(segment_index)
+                snapshot_time = segment_snapshot_times[segment_index][frame_index]
+                frame = _render_frame(
+                    context=context,
+                    snapshot_time=snapshot_time,
+                    break_periods=row_timing.break_periods if row_timing.is_preview else (),
+                    visible_indexes=segment_visible_indexes[segment_index][frame_index],
+                )
+                canvas.alpha_composite(frame, (x, y))
+                note = _build_time_label_note(row_timing)
+                is_preview_label = row_timing.is_preview
+                _draw_time_label(
+                    draw, _build_gif_time_label(row_timing.start_time),
+                    x, y + IMAGE_HEIGHT + TIME_LABEL_TOP_GAP,
+                    font_regular, font_note, note,
+                    PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_COLOR,
+                    PREVIEW_TIME_LABEL_COLOR if is_preview_label else TIME_LABEL_NOTE_COLOR,
+                )
 
-        frames.append(canvas)
+            yield canvas
 
-    return frames, frame_duration_ms, GIF_LOOP
+    return frame_generator(), frame_duration_ms, GIF_LOOP
 
 
 # ——— row selection (merged from row_selection.py) ———

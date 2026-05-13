@@ -8,6 +8,10 @@ from functools import lru_cache
 from ..errors import PreviewError
 from ..models import StandardHitObject
 
+BEZIER_TOLERANCE = 0.25  # osu! PathApproximator.BEZIER_TOLERANCE
+CATMULL_DETAIL = 50  # osu! PathApproximator.catmull_detail
+CATMULL_MIN_DISTANCE = 6.0  # osu!stable Catmull 优化
+
 
 @dataclass(frozen=True)
 class SliderPath:
@@ -18,6 +22,36 @@ class SliderPath:
 
 def build_slider_path(hit_object: StandardHitObject) -> SliderPath:
     return _build_slider_path_cached(hit_object)
+
+
+def simplify_path(points: list[tuple[float, float]], tolerance: float = 1.0) -> list[tuple[float, float]]:
+    # Ramer–Douglas–Peucker 算法简化路径，减少渲染点数
+    if len(points) < 3:
+        return points
+    # 找到距离首尾连线最远的点
+    sx, sy = points[0]
+    ex, ey = points[-1]
+    dx, dy = ex - sx, ey - sy
+    line_len_sq = dx * dx + dy * dy
+    max_dist_sq = 0.0
+    max_idx = 0
+    for i in range(1, len(points) - 1):
+        if line_len_sq < 0.0001:
+            dist_sq = (points[i][0] - sx) ** 2 + (points[i][1] - sy) ** 2
+        else:
+            t = ((points[i][0] - sx) * dx + (points[i][1] - sy) * dy) / line_len_sq
+            t = max(0.0, min(1.0, t))
+            px = sx + t * dx
+            py = sy + t * dy
+            dist_sq = (points[i][0] - px) ** 2 + (points[i][1] - py) ** 2
+        if dist_sq > max_dist_sq:
+            max_dist_sq = dist_sq
+            max_idx = i
+    if max_dist_sq <= tolerance * tolerance:
+        return [points[0], points[-1]]
+    left = simplify_path(points[:max_idx + 1], tolerance)
+    right = simplify_path(points[max_idx:], tolerance)
+    return left[:-1] + right
 
 
 def build_path(points: list[tuple[float, float]] | tuple[tuple[float, float], ...]) -> SliderPath:
@@ -39,7 +73,6 @@ def build_path(points: list[tuple[float, float]] | tuple[tuple[float, float], ..
 
 
 def path_position_at(path: SliderPath, progress: float) -> tuple[float, float]:
-    """返回近似路径上指定进度对应的坐标点。"""
     if not path.points:
         raise PreviewError("slider path has no points")
     if len(path.points) < 2 or path.total_length <= 0:
@@ -50,11 +83,8 @@ def path_position_at(path: SliderPath, progress: float) -> tuple[float, float]:
 
 
 def slice_path(
-    path: SliderPath,
-    start_progress: float,
-    end_progress: float,
+    path: SliderPath, start_progress: float, end_progress: float,
 ) -> list[tuple[float, float]]:
-    """截取近似路径在两个进度值之间的片段。"""
     if len(path.points) < 2 or path.total_length <= 0:
         return list(path.points)
     if start_progress > end_progress:
@@ -76,14 +106,12 @@ def slice_path(
 
 @lru_cache(maxsize=None)
 def _build_slider_path_cached(hit_object: StandardHitObject) -> SliderPath:
-    """在 osu! 游玩坐标系中近似 standard slider 路径。"""
     if hit_object.slider_type is None:
         raise PreviewError("slider is missing path type")
 
     points = [(float(hit_object.x), float(hit_object.y))]
     points.extend((float(x), float(y)) for x, y in hit_object.slider_points)
 
-    # osu! 的 slider 类型：L=直线，P=三点圆弧，C=Catmull，其余按 Bezier 处理。
     if hit_object.slider_type == "L":
         path = points
     elif hit_object.slider_type == "P":
@@ -93,7 +121,8 @@ def _build_slider_path_cached(hit_object: StandardHitObject) -> SliderPath:
     else:
         path = _approximate_bezier_segments(points)
 
-    return build_path(_fit_path_to_length(path, hit_object.slider_pixel_length))
+    fitted = _fit_path_to_length(path, hit_object.slider_pixel_length)
+    return build_path(simplify_path(fitted))
 
 
 def _path_position_at_distance(path: SliderPath, target: float) -> tuple[float, float]:
@@ -118,39 +147,84 @@ def _path_position_at_distance(path: SliderPath, target: float) -> tuple[float, 
     )
 
 
+# ——— Bezier (分段，重复控制点 = 段边界，产生尖角) ———
+
 def _approximate_bezier_segments(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    # C# SliderPath.calculateSubPath：先去除连续重复控制点，再将整段作为一条 Bezier 逼近。
-    deduped = [points[0]]
+    path: list[tuple[float, float]] = []
+    segment = [points[0]]
+
     for point in points[1:]:
-        if point != deduped[-1]:
-            deduped.append(point)
+        segment.append(point)
+        if len(segment) > 2 and point == segment[-2]:
+            segment.pop()
+            path.extend(_approximate_bezier(segment))
+            segment = [point]
 
-    if len(deduped) < 2:
-        return deduped
-
-    return _approximate_bezier(deduped)
+    if len(segment) > 1:
+        path.extend(_approximate_bezier(segment))
+    return _dedupe_points(path)
 
 
 def _approximate_bezier(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    steps = max(64, len(points) * 24)
-    return [_bezier_at(points, index / steps) for index in range(steps + 1)]
+    if len(points) < 2:
+        return points
+    if len(points) == 2:
+        return [points[0], points[1]]
+
+    result: list[tuple[float, float]] = [points[0]]
+    stack: list[list[tuple[float, float]]] = [list(points)]
+    while stack:
+        parent = stack.pop()
+        if _bezier_is_flat_enough(parent):
+            result.extend(_bezier_approximate(parent))
+        else:
+            left, right = _bezier_subdivide(parent)
+            parent[: len(left)] = left
+            stack.append(parent)
+            stack.append(right)
+    result.append(points[-1])
+    return result
 
 
-def _bezier_at(points: list[tuple[float, float]], t: float) -> tuple[float, float]:
-    working = points[:]
-    while len(working) > 1:
-        working = [
-            (
-                working[index][0] * (1 - t) + working[index + 1][0] * t,
-                working[index][1] * (1 - t) + working[index + 1][1] * t,
+def _bezier_is_flat_enough(points: list[tuple[float, float]]) -> bool:
+    threshold = BEZIER_TOLERANCE * BEZIER_TOLERANCE * 4
+    for i in range(1, len(points) - 1):
+        dx = points[i - 1][0] - 2 * points[i][0] + points[i + 1][0]
+        dy = points[i - 1][1] - 2 * points[i][1] + points[i + 1][1]
+        if dx * dx + dy * dy > threshold:
+            return False
+    return True
+
+
+def _bezier_subdivide(points: list[tuple[float, float]]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    count = len(points)
+    midpoints = list(points)
+    left: list[tuple[float, float]] = [points[0]] * count
+    right: list[tuple[float, float]] = [points[-1]] * count
+    for i in range(count):
+        left[i] = midpoints[0]
+        right[count - i - 1] = midpoints[count - i - 1]
+        for j in range(count - i - 1):
+            midpoints[j] = (
+                (midpoints[j][0] + midpoints[j + 1][0]) / 2,
+                (midpoints[j][1] + midpoints[j + 1][1]) / 2,
             )
-            for index in range(len(working) - 1)
-        ]
-    return working[0]
+    return left, right
 
+
+def _bezier_approximate(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    count = len(points)
+    left, _ = _bezier_subdivide(points)
+    output: list[tuple[float, float]] = []
+    for i in range(1, count - 1):
+        p0, p1, p2 = left[i - 1], left[i], left[i + 1]
+        output.append((0.25 * (p0[0] + 2 * p1[0] + p2[0]), 0.25 * (p0[1] + 2 * p1[1] + p2[1])))
+    return output
+
+
+# ——— Perfect / Circular arc ———
 
 def _approximate_perfect_curve(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    # Perfect curve 只有三个非共线点时才是圆弧；其它情况按 Bezier 兼容处理。
     if len(points) != 3 or _are_collinear(points[0], points[1], points[2]):
         return _approximate_bezier_segments(points)
 
@@ -160,24 +234,27 @@ def _approximate_perfect_curve(points: list[tuple[float, float]]) -> list[tuple[
     middle_angle = math.atan2(points[1][1] - centre[1], points[1][0] - centre[0])
     end_angle = math.atan2(points[2][1] - centre[1], points[2][0] - centre[0])
     end_angle = _normalise_arc_end(start_angle, middle_angle, end_angle)
-    steps = max(64, round(abs(end_angle - start_angle) * radius / 4))
+    theta_range = abs(end_angle - start_angle)
+
+    # osu! 公式: max(2, ceil(thetaRange / (2 * acos(1 - 0.1/Radius))))
+    step_angle = 2 * math.acos(1 - 0.1 / radius) if radius > 0.1 else math.tau
+    steps = max(2, math.ceil(theta_range / step_angle))
+    if steps >= 1000:
+        return _approximate_bezier_segments(points)
+
     return [
         (
-            centre[0] + math.cos(start_angle + (end_angle - start_angle) * index / steps) * radius,
-            centre[1] + math.sin(start_angle + (end_angle - start_angle) * index / steps) * radius,
+            centre[0] + math.cos(start_angle + theta_range * index / steps) * radius,
+            centre[1] + math.sin(start_angle + theta_range * index / steps) * radius,
         )
         for index in range(steps + 1)
     ]
 
 
 def _circle_centre(
-    first: tuple[float, float],
-    second: tuple[float, float],
-    third: tuple[float, float],
+    first: tuple[float, float], second: tuple[float, float], third: tuple[float, float],
 ) -> tuple[float, float]:
-    ax, ay = first
-    bx, by = second
-    cx, cy = third
+    ax, ay = first; bx, by = second; cx, cy = third
     d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
     ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d
     uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d
@@ -185,7 +262,6 @@ def _circle_centre(
 
 
 def _normalise_arc_end(start: float, middle: float, end: float) -> float:
-    # 选择穿过中间控制点的那一段圆弧，避免走到另一侧的长弧。
     while end < start:
         end += math.tau
     middle_forward = middle
@@ -193,33 +269,31 @@ def _normalise_arc_end(start: float, middle: float, end: float) -> float:
         middle_forward += math.tau
     if middle_forward <= end:
         return end
-
     while end > start:
         end -= math.tau
     return end
 
+
+# ——— Catmull ———
 
 def _approximate_catmull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if len(points) < 2:
         return points
 
     path: list[tuple[float, float]] = []
-    # 端点复制一次，保证首尾两段也能按 Catmull-Rom 样条计算切线。
     extended = [points[0], *points, points[-1]]
     for index in range(1, len(extended) - 2):
         p0, p1, p2, p3 = extended[index - 1], extended[index], extended[index + 1], extended[index + 2]
-        for step in range(50):
-            path.append(_catmull_at(p0, p1, p2, p3, step / 50))
+        for step in range(CATMULL_DETAIL):
+            path.append(_catmull_at(p0, p1, p2, p3, step / CATMULL_DETAIL))
     path.append(points[-1])
-    return _dedupe_points(path)
+
+    return _catmull_optimise(path, points)
 
 
 def _catmull_at(
-    p0: tuple[float, float],
-    p1: tuple[float, float],
-    p2: tuple[float, float],
-    p3: tuple[float, float],
-    t: float,
+    p0: tuple[float, float], p1: tuple[float, float],
+    p2: tuple[float, float], p3: tuple[float, float], t: float,
 ) -> tuple[float, float]:
     t2 = t * t
     t3 = t2 * t
@@ -238,17 +312,22 @@ def _catmull_at(
     return x, y
 
 
-def _fit_path_to_length(
-    path: list[tuple[float, float]],
-    expected_length: float,
-) -> list[tuple[float, float]]:
-    """按 osu! C# SliderPath.calculateLength 算法调整路径长度。
+def _catmull_optimise(path: list[tuple[float, float]], knots: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    knot_set = set(knots)
+    result: list[tuple[float, float]] = [path[0]]
+    for i in range(1, len(path)):
+        prev = result[-1]
+        curr = path[i]
+        if math.dist(prev, curr) >= CATMULL_MIN_DISTANCE or curr in knot_set or i == len(path) - 1:
+            result.append(curr)
+    return result
 
-    C# 的做法（与 stable 行为一致）：
-    1. 计算全部累积距离
-    2. 从末尾移除超过 expected_length 的点
-    3. 将最后一个保留点沿其到来方向（P[n-2]→P[n-1]）调整到 expected_length
-    """
+
+# ——— fit path to expected pixel length ———
+
+def _fit_path_to_length(
+    path: list[tuple[float, float]], expected_length: float,
+) -> list[tuple[float, float]]:
     if len(path) < 2 or expected_length <= 0:
         return path
 
@@ -258,8 +337,7 @@ def _fit_path_to_length(
         travelled += math.dist(path[index - 1], path[index])
         cumulative.append(travelled)
 
-    actual_length = travelled
-    if actual_length <= 0:
+    if travelled <= 0:
         return path
 
     fitted = list(path)
@@ -270,12 +348,10 @@ def _fit_path_to_length(
     if len(fitted) < 2:
         return path[:2] if len(path) >= 2 else path
 
-    # C#：若最后两个路径点重合，不扩展（匹配 stable）
-    if fitted[-1] == fitted[-2]:
+    if fitted[-1] == fitted[-2] and expected_length > cumulative[-1]:
         return fitted
 
-    last_cumulative = cumulative[-1]
-    remaining = expected_length - last_cumulative
+    remaining = expected_length - cumulative[-1]
     direction = (fitted[-1][0] - fitted[-2][0], fitted[-1][1] - fitted[-2][1])
     direction_length = math.hypot(direction[0], direction[1])
 
@@ -297,8 +373,6 @@ def _dedupe_points(points: list[tuple[float, float]]) -> list[tuple[float, float
 
 
 def _are_collinear(
-    first: tuple[float, float],
-    second: tuple[float, float],
-    third: tuple[float, float],
+    first: tuple[float, float], second: tuple[float, float], third: tuple[float, float],
 ) -> bool:
     return abs((second[1] - first[1]) * (third[0] - first[0]) - (second[0] - first[0]) * (third[1] - first[1])) < 0.001

@@ -6,15 +6,16 @@ from PIL import Image
 
 
 def save_animated_gif(
-    frames: list[Image.Image],
+    frames_iter,
     output_path: Path,
     frame_duration_ms: int,
     loop: int,
 ) -> None:
-    frames[0].save(
+    first = next(frames_iter)
+    first.save(
         output_path,
         save_all=True,
-        append_images=frames[1:],
+        append_images=frames_iter,
         duration=frame_duration_ms,
         loop=loop,
         optimize=True,
@@ -23,4 +24,4 @@ def save_animated_gif(
 
 
 def save_png(image: Image.Image, output_path: Path) -> None:
-    image.save(output_path)
+    image.convert("RGB").save(output_path, optimize=True)

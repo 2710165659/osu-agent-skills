@@ -48,6 +48,8 @@ from .config import (
 from .objects import CatchRenderObject, build_catch_render_objects
 from .skin import CatchSkin, load_catch_skin
 
+_catch_cache: dict = {}
+
 
 @dataclass(frozen=True)
 class TimingLine:
@@ -88,6 +90,7 @@ def render_catch_grid(beatmap: Beatmap, output_path: Path) -> Path:
         raise PreviewError("catch beatmap has no hit objects")
 
     skin = load_catch_skin()
+    _catch_cache.clear()
     render_objects = build_catch_render_objects(beatmap, hit_objects, skin.combo_colors)
     chart_end_time = max(1, max(hit_object.end_time for hit_object in hit_objects))
     timing_lines = _build_timing_lines(beatmap.timing_points, chart_end_time)
@@ -108,7 +111,7 @@ def render_catch_grid(beatmap: Beatmap, output_path: Path) -> Path:
     for catch_object in sorted(render_objects, key=lambda item: (-item.start_time, _object_order(item.object_type))):
         _draw_catch_object(image, skin, catch_object, layout)
 
-    image.save(output_path)
+    image.convert("RGB").save(output_path, optimize=True)
     return output_path
 
 
@@ -284,8 +287,17 @@ def _draw_catch_object(
         glow = _tint_sprite(base_sprite, skin.hyper_dash_fruit_color, glow_size, FRUIT_HYPER_GLOW_ALPHA)
         image.alpha_composite(glow, (round(center_x - glow.width / 2), round(center_y - glow.height / 2)))
 
-    base = _tint_sprite(base_sprite, catch_object.color, diameter, 1.0)
-    overlay = _resize_sprite(overlay_sprite, (diameter, diameter))
+    base_key = (id(base_sprite), catch_object.color, diameter)
+    base = _catch_cache.get(base_key)
+    if base is None:
+        base = _tint_sprite(base_sprite, catch_object.color, diameter, 1.0)
+        _catch_cache[base_key] = base
+
+    overlay_key = (id(overlay_sprite), diameter)
+    overlay = _catch_cache.get(overlay_key)
+    if overlay is None:
+        overlay = _resize_sprite(overlay_sprite, (diameter, diameter))
+        _catch_cache[overlay_key] = overlay
 
     if catch_object.rotation:
         base = base.rotate(catch_object.rotation, resample=Image.Resampling.BICUBIC, expand=True)
@@ -301,7 +313,11 @@ def _draw_catcher(
     layout: RenderLayout,
     column_index: int,
 ) -> None:
-    catcher = _resize_sprite(skin.catcher_idle, (layout.catcher_metrics.width, layout.catcher_metrics.height))
+    catcher_key = (id(skin.catcher_idle), layout.catcher_metrics.width, layout.catcher_metrics.height)
+    catcher = _catch_cache.get(catcher_key)
+    if catcher is None:
+        catcher = _resize_sprite(skin.catcher_idle, (layout.catcher_metrics.width, layout.catcher_metrics.height))
+        _catch_cache[catcher_key] = catcher
     catch_x = round(_playfield_left(column_index, layout) + PLAYFIELD_WIDTH * layout.playfield_scale / 2 - catcher.width / 2)
     catch_y = _chart_bottom(layout, column_index) - layout.catcher_metrics.origin_y
     image.alpha_composite(catcher, (catch_x, catch_y))

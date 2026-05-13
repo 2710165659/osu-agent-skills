@@ -41,6 +41,8 @@ from .config import (
     TOP_BUFFER,
 )
 
+_darken_cache: dict[str, str] = {}
+
 LANE_COLOR_PALETTES = {
     1: ["#e9eef4"],
     2: ["#e9eef4", "#e9eef4"],
@@ -108,14 +110,20 @@ def render_mania_grid(beatmap: Beatmap, output_path: Path) -> Path:
     for hit_object in beatmap.hit_objects:
         _draw_hit_object(draw, hit_object, palette, layout)
 
-    image.save(output_path)
+    image.convert("RGB").save(output_path, optimize=True)
     return output_path
 
 
 def _darken_hex(color: str, ratio: float) -> str:
+    key = f"{color}_{ratio}"
+    cached = _darken_cache.get(key)
+    if cached is not None:
+        return cached
     channels = [int(color[index : index + 2], 16) for index in (1, 3, 5)]
     darkened = [int(channel * (1 - ratio)) for channel in channels]
-    return "#" + "".join(f"{value:02x}" for value in darkened)
+    result = "#" + "".join(f"{value:02x}" for value in darkened)
+    _darken_cache[key] = result
+    return result
 
 
 def _build_layout(key_count: int, beatmap_duration: int, chart_end_time: int) -> RenderLayout:

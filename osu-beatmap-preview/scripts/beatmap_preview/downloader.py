@@ -10,6 +10,8 @@ from .errors import PreviewError
 def download_beatmap_file(bid: str, temp_dir: Path) -> Path:
     temp_dir.mkdir(parents=True, exist_ok=True)
     target_path = temp_dir / f"{bid}.osu"
+    if target_path.is_file() and target_path.stat().st_size > 0:
+        return target_path
     request = Request(
         url=f"https://osu.ppy.sh/osu/{bid}",
         headers={"User-Agent": "osu-beatmap-preview/1.0"},
