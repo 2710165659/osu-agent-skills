@@ -31,8 +31,8 @@ PLAYFIELD_BACKGROUND = (7, 7, 7, 255)  # catch playfield 背景色
 PLAYFIELD_BORDER = (34, 34, 34, 255)  # playfield 边框色
 RULER_TEXT = (232, 232, 232, 255)  # 时间文字颜色
 KIAI_TIME_LABEL_COLOR = (95, 221, 108, 255)  # kiai 段时间标签颜色
-MEASURE_LINE = (220, 220, 220, 96)  # 小节线颜色
-BEAT_LINE = (200, 200, 200, 72)  # 拍线颜色
+MEASURE_LINE = (87, 87, 87)  # (220,220,220,96) 预混合到 playfield 背景 (7,7,7)
+BEAT_LINE = (62, 62, 62)  # (200,200,200,72) 预混合到 playfield 背景 (7,7,7)
 
 FRUIT_HYPER_GLOW_ALPHA = 0.7  # hyper fruit 发光层透明度
 FRUIT_HYPER_GLOW_SCALE = 1.2  # hyper fruit 发光层放大倍率

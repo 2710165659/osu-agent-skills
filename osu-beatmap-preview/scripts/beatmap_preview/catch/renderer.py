@@ -48,8 +48,6 @@ from .config import (
 from .objects import CatchRenderObject, build_catch_render_objects
 from .skin import CatchSkin, load_catch_skin
 
-_catch_cache: dict = {}
-
 
 @dataclass(frozen=True)
 class TimingLine:
@@ -90,28 +88,28 @@ def render_catch_grid(beatmap: Beatmap, output_path: Path) -> Path:
         raise PreviewError("catch beatmap has no hit objects")
 
     skin = load_catch_skin()
-    _catch_cache.clear()
+    render_cache: dict = {}
     render_objects = build_catch_render_objects(beatmap, hit_objects, skin.combo_colors)
     chart_end_time = max(1, max(hit_object.end_time for hit_object in hit_objects))
     timing_lines = _build_timing_lines(beatmap.timing_points, chart_end_time)
     layout = _build_layout(chart_end_time, float(beatmap.difficulty["CircleSize"]), skin)
     font_regular = ImageFont.load_default(size=TIME_LABEL_FONT_SIZE)
 
-    image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
+    image = Image.new("RGB", (layout.image_width, layout.image_height), IMAGE_BACKGROUND[:3])
     draw = ImageDraw.Draw(image)
 
     for column_index in range(layout.column_count):
         _draw_column_background(draw, layout, column_index)
         if DRAW_CATCHER_EACH_COLUMN or column_index == 0:
-            _draw_catcher(image, skin, layout, column_index)
+            _draw_catcher(image, skin, layout, column_index, render_cache)
 
     for timing_line in timing_lines:
         _draw_timing_line(draw, timing_line, layout, font_regular)
 
     for catch_object in sorted(render_objects, key=lambda item: (-item.start_time, _object_order(item.object_type))):
-        _draw_catch_object(image, skin, catch_object, layout)
+        _draw_catch_object(image, skin, catch_object, layout, render_cache)
 
-    image.convert("RGB").save(output_path, optimize=True)
+    image.save(output_path, optimize=True)
     return output_path
 
 
@@ -261,6 +259,7 @@ def _draw_catch_object(
     skin: CatchSkin,
     catch_object: CatchRenderObject,
     layout: RenderLayout,
+    cache: dict,
 ) -> None:
     column_index = min(layout.column_count - 1, catch_object.start_time // layout.time_per_column)
     local_time = catch_object.start_time - column_index * layout.time_per_column
@@ -285,26 +284,26 @@ def _draw_catch_object(
     if catch_object.hyper_dash:
         glow_size = max(1, round(diameter * FRUIT_HYPER_GLOW_SCALE))
         glow = _tint_sprite(base_sprite, skin.hyper_dash_fruit_color, glow_size, FRUIT_HYPER_GLOW_ALPHA)
-        image.alpha_composite(glow, (round(center_x - glow.width / 2), round(center_y - glow.height / 2)))
+        image.paste(glow, (round(center_x - glow.width / 2), round(center_y - glow.height / 2)), glow)
 
     base_key = (id(base_sprite), catch_object.color, diameter)
-    base = _catch_cache.get(base_key)
+    base = cache.get(base_key)
     if base is None:
         base = _tint_sprite(base_sprite, catch_object.color, diameter, 1.0)
-        _catch_cache[base_key] = base
+        cache[base_key] = base
 
     overlay_key = (id(overlay_sprite), diameter)
-    overlay = _catch_cache.get(overlay_key)
+    overlay = cache.get(overlay_key)
     if overlay is None:
         overlay = _resize_sprite(overlay_sprite, (diameter, diameter))
-        _catch_cache[overlay_key] = overlay
+        cache[overlay_key] = overlay
 
     if catch_object.rotation:
         base = base.rotate(catch_object.rotation, resample=Image.Resampling.BICUBIC, expand=True)
         overlay = overlay.rotate(catch_object.rotation, resample=Image.Resampling.BICUBIC, expand=True)
 
-    image.alpha_composite(base, (round(center_x - base.width / 2), round(center_y - base.height / 2)))
-    image.alpha_composite(overlay, (round(center_x - overlay.width / 2), round(center_y - overlay.height / 2)))
+    image.paste(base, (round(center_x - base.width / 2), round(center_y - base.height / 2)), base)
+    image.paste(overlay, (round(center_x - overlay.width / 2), round(center_y - overlay.height / 2)), overlay)
 
 
 def _draw_catcher(
@@ -312,15 +311,16 @@ def _draw_catcher(
     skin: CatchSkin,
     layout: RenderLayout,
     column_index: int,
+    cache: dict,
 ) -> None:
     catcher_key = (id(skin.catcher_idle), layout.catcher_metrics.width, layout.catcher_metrics.height)
-    catcher = _catch_cache.get(catcher_key)
+    catcher = cache.get(catcher_key)
     if catcher is None:
         catcher = _resize_sprite(skin.catcher_idle, (layout.catcher_metrics.width, layout.catcher_metrics.height))
-        _catch_cache[catcher_key] = catcher
+        cache[catcher_key] = catcher
     catch_x = round(_playfield_left(column_index, layout) + PLAYFIELD_WIDTH * layout.playfield_scale / 2 - catcher.width / 2)
     catch_y = _chart_bottom(layout, column_index) - layout.catcher_metrics.origin_y
-    image.alpha_composite(catcher, (catch_x, catch_y))
+    image.paste(catcher, (catch_x, catch_y), catcher)
 
 
 def _build_timing_lines(timing_points: list[TimingPoint], chart_end_time: int) -> list[TimingLine]:

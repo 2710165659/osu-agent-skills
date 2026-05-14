@@ -6,6 +6,10 @@ from pathlib import Path
 from PIL import Image
 
 CATCH_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "catch"
+
+_skin_singleton: CatchSkin | None = None
+
+
 @dataclass(frozen=True)
 class CatchSkin:
     fruit_bases: dict[str, Image.Image]
@@ -21,10 +25,12 @@ class CatchSkin:
 
 
 def load_catch_skin() -> CatchSkin:
-    """加载 catch 预览渲染所需的皮肤素材与颜色配置。"""
+    global _skin_singleton
+    if _skin_singleton is not None:
+        return _skin_singleton
     skin_config = _parse_skin_config(CATCH_ASSET_DIR / "skin.ini")
     combo_colors = _parse_combo_colors(skin_config)
-    return CatchSkin(
+    _skin_singleton = CatchSkin(
         fruit_bases={
             "pear": Image.open(CATCH_ASSET_DIR / "fruit-pear@2x.png").convert("RGBA"),
             "grapes": Image.open(CATCH_ASSET_DIR / "fruit-grapes@2x.png").convert("RGBA"),
@@ -46,6 +52,7 @@ def load_catch_skin() -> CatchSkin:
         hyper_dash_color=_parse_rgb(skin_config["HyperDash"]),
         hyper_dash_fruit_color=_parse_rgb(skin_config["HyperDashFruit"]),
     )
+    return _skin_singleton
 
 
 def _parse_skin_config(skin_path: Path) -> dict[str, str]:

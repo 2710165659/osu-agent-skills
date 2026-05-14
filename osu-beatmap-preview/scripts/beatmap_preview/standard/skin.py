@@ -24,11 +24,16 @@ class StandardSkin:
     slider_track: tuple[int, int, int]
 
 
+_skin_singleton: StandardSkin | None = None
+
+
 def load_standard_skin() -> StandardSkin:
-    """加载随 skill 固定携带的 standard 皮肤资源。"""
+    global _skin_singleton
+    if _skin_singleton is not None:
+        return _skin_singleton
     skin_config = _parse_skin_config(STANDARD_ASSET_DIR / "skin.ini")
     combo_colors = _parse_combo_colors(skin_config)
-    return StandardSkin(
+    _skin_singleton = StandardSkin(
         hitcircle=Image.open(STANDARD_ASSET_DIR / "hitcircle@2x.png").convert("RGBA"),
         hitcircle_overlay=Image.open(STANDARD_ASSET_DIR / "hitcircleoverlay@2x.png").convert("RGBA"),
         approachcircle=Image.open(STANDARD_ASSET_DIR / "approachcircle@2x.png").convert("RGBA"),
@@ -45,6 +50,7 @@ def load_standard_skin() -> StandardSkin:
         slider_border=_parse_rgb(skin_config["SliderBorder"]),
         slider_track=_parse_rgb(skin_config["SliderTrackOverride"]),
     )
+    return _skin_singleton
 
 
 def _parse_skin_config(skin_path: Path) -> dict[str, str]:

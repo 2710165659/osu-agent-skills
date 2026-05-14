@@ -7,6 +7,8 @@ from PIL import Image
 
 TAIKO_ASSET_DIR = Path(__file__).resolve().parents[3] / "assets" / "taiko"
 
+_skin_singleton: TaikoSkin | None = None
+
 
 @dataclass(frozen=True)
 class TaikoSkin:
@@ -22,7 +24,9 @@ class TaikoSkin:
 
 
 def load_taiko_skin() -> TaikoSkin:
-    """加载 taiko 预览渲染用到的皮肤素材。"""
+    global _skin_singleton
+    if _skin_singleton is not None:
+        return _skin_singleton
     required_assets = {
         "bar_left": "taiko-bar-left@2x.png",
         "bar_right": "taiko-bar-right@2x.png",
@@ -42,4 +46,5 @@ def load_taiko_skin() -> TaikoSkin:
             image = image.crop(image.getchannel("A").getbbox())
         images[key] = image
 
-    return TaikoSkin(**images)
+    _skin_singleton = TaikoSkin(**images)
+    return _skin_singleton

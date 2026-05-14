@@ -132,7 +132,7 @@ def _build_banana_shower_objects(
     hit_object: CatchHitObject,
     index_in_beatmap: int,
     rng: LegacyRandom,
-) -> list[CatchRenderObject]:
+):
     start_time = int(hit_object.start_time)
     end_time = int(hit_object.end_time)
     spacing = _to_float32(float(hit_object.end_time - hit_object.start_time))
@@ -140,32 +140,26 @@ def _build_banana_shower_objects(
     while spacing > 100:
         spacing = _to_float32(spacing / 2)
     if spacing <= 0:
-        return []
+        return
 
-    bananas: list[CatchRenderObject] = []
     current_time = _to_float32(float(start_time))
     while current_time <= end_time:
         x = rng.next_double() * PLAYFIELD_WIDTH
-        # stable 在香蕉偏移后还会取 3 次随机数：类型、旋转、颜色。
         rng.next()
         rng.next()
         rng.next()
-        bananas.append(
-            CatchRenderObject(
-                object_type="banana",
-                x=x,
-                start_time=int(round(current_time)),
-                color=_banana_color(int(current_time)),
-                index_in_beatmap=index_in_beatmap,
-                sprite_name="banana",
-                scale_factor=BANANA_SCALE,
-                rotation=_banana_rotation(int(current_time)),
-                event_time=current_time,
-            )
+        yield CatchRenderObject(
+            object_type="banana",
+            x=x,
+            start_time=int(round(current_time)),
+            color=_banana_color(int(current_time)),
+            index_in_beatmap=index_in_beatmap,
+            sprite_name="banana",
+            scale_factor=BANANA_SCALE,
+            rotation=_banana_rotation(int(current_time)),
+            event_time=current_time,
         )
         current_time = _to_float32(current_time + spacing)
-
-    return bananas
 
 
 def _build_juice_stream_objects(
@@ -177,7 +171,7 @@ def _build_juice_stream_objects(
     beatmap_format_version: int,
     timing_points: list[TimingPoint],
     rng: LegacyRandom,
-) -> list[CatchRenderObject]:
+):
     if hit_object.slider_type is None:
         raise PreviewError("catch slider is missing path type")
 
@@ -218,7 +212,7 @@ def _build_juice_stream_objects(
 
         previous_event = event
 
-    return _apply_stream_offsets(nested_objects, rng)
+    yield from _apply_stream_offsets(nested_objects, rng)
 
 
 def _build_slider_events(
@@ -312,9 +306,9 @@ def _generate_span_ticks(
     total_distance: float,
     tick_distance: float,
     min_distance_from_end: float,
-) -> list[SliderEvent]:
+):
     if tick_distance <= 0:
-        return []
+        return
 
     ticks: list[SliderEvent] = []
     distance = tick_distance
@@ -339,7 +333,7 @@ def _generate_span_ticks(
     if reversed_span:
         ticks.reverse()
 
-    return ticks
+    yield from ticks
 
 
 def _build_legacy_last_tick(start_time: int, span_duration: float, span_count: int) -> SliderEvent | None:
@@ -372,53 +366,46 @@ def _build_tiny_droplets_between(
     current_event: SliderEvent,
     index_in_beatmap: int,
     combo_color: tuple[int, int, int],
-) -> list[CatchRenderObject]:
+):
     since_last_event = int(current_event.time) - int(previous_event.time)
     if since_last_event <= 80:
-        return []
+        return
 
     time_between_tiny = float(since_last_event)
     while time_between_tiny > 100:
         time_between_tiny /= 2
 
-    droplets: list[CatchRenderObject] = []
     offset = time_between_tiny
     while offset < since_last_event - 0.001:
         ratio = offset / since_last_event
         progress = previous_event.path_progress + ratio * (current_event.path_progress - previous_event.path_progress)
         x = path_position_at(path, progress)[0]
-        droplets.append(
-            CatchRenderObject(
-                object_type="tiny_droplet",
-                x=x,
-                start_time=int(round(previous_event.time + offset)),
-                color=combo_color,
-                index_in_beatmap=index_in_beatmap,
-                sprite_name="drop",
-                scale_factor=TINY_DROPLET_SCALE,
-                rotation=_droplet_rotation(int(round(previous_event.time + offset))),
-                event_time=previous_event.time + offset,
-            )
+        yield CatchRenderObject(
+            object_type="tiny_droplet",
+            x=x,
+            start_time=int(round(previous_event.time + offset)),
+            color=combo_color,
+            index_in_beatmap=index_in_beatmap,
+            sprite_name="drop",
+            scale_factor=TINY_DROPLET_SCALE,
+            rotation=_droplet_rotation(int(round(previous_event.time + offset))),
+            event_time=previous_event.time + offset,
         )
         offset += time_between_tiny
-
-    return droplets
 
 
 def _apply_stream_offsets(
     nested_objects: list[CatchRenderObject],
     rng: LegacyRandom,
-) -> list[CatchRenderObject]:
-    adjusted: list[CatchRenderObject] = []
+):
     for catch_object in nested_objects:
         if catch_object.object_type == "tiny_droplet":
             offset = max(-catch_object.x, min(rng.next(-20, 20), PLAYFIELD_WIDTH - catch_object.x))
-            adjusted.append(replace(catch_object, x=catch_object.x + offset))
+            yield replace(catch_object, x=catch_object.x + offset)
             continue
         if catch_object.object_type == "droplet":
             rng.next()
-        adjusted.append(catch_object)
-    return adjusted
+        yield catch_object
 
 
 def _apply_hyper_dash(

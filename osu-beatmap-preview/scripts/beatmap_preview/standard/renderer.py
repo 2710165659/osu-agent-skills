@@ -38,7 +38,7 @@ from .config import (
     VERTICAL_PAGE_MARGIN,
 )
 from .skin import StandardSkin, load_standard_skin
-from .slider_path import SliderPath, build_path, build_slider_path, path_position_at, slice_path
+from .slider_path import SliderPath, build_path, build_slider_path, path_position_at, slice_path, _build_slider_path_cached
 
 # ——— osu! 源码相关常量 ———
 PLAYFIELD_WIDTH = 512  # osu!standard 原始游玩区域宽度
@@ -154,11 +154,15 @@ class RenderContext:
 # ——— public API ———
 
 def render_standard(beatmap: Beatmap, hit_objects: list[StandardHitObject], fmt: str) -> Image.Image | tuple:
-    if fmt == "png":
-        return _render_png_grid(beatmap, hit_objects)
-    if fmt == "gif":
-        return _render_gif(beatmap, hit_objects)
-    raise PreviewError(f"unsupported standard output format: {fmt}")
+    _build_slider_path_cached.cache_clear()
+    try:
+        if fmt == "png":
+            return _render_png_grid(beatmap, hit_objects)
+        if fmt == "gif":
+            return _render_gif(beatmap, hit_objects)
+        raise PreviewError(f"unsupported standard output format: {fmt}")
+    finally:
+        _build_slider_path_cached.cache_clear()
 
 
 # ——— PNG grid ———
@@ -793,9 +797,9 @@ def _draw_cached_slider_body(
     tinted_key = (body_key, alpha_key)
     alpha_layer = context.cache.slider_body_alpha_layers.get(tinted_key)
     if alpha_layer is None:
-        alpha_layer = layer.image.copy()
-        alpha_channel = alpha_layer.getchannel("A").point(lambda value: round(value * (alpha_key / 255)))
-        alpha_layer.putalpha(alpha_channel)
+        r, g, b, a = layer.image.split()
+        a = a.point(lambda value: round(value * (alpha_key / 255)))
+        alpha_layer = Image.merge("RGBA", (r, g, b, a))
         context.cache.slider_body_alpha_layers[tinted_key] = alpha_layer
     frame.alpha_composite(alpha_layer, layer.offset)
 

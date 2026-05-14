@@ -70,8 +70,6 @@ HIT_SOUNDS_STRONG = 4
 DRUMROLL_FLAG = 2
 SWELL_FLAG = 8
 
-_render_cache: dict = {}
-
 
 @dataclass(frozen=True)
 class RenderLayout:
@@ -92,10 +90,13 @@ def render_taiko_grid(beatmap: Beatmap, output_path: Path) -> Path:
     if not hit_objects:
         raise PreviewError("taiko beatmap has no hit objects")
 
-    skin = load_taiko_skin()
-    _render_cache.clear()
-    slider_multiplier = float(beatmap.difficulty["SliderMultiplier"])
     chart_end_time = max(hit_object.end_time for hit_object in hit_objects)
+    if chart_end_time >= MAX_SUPPORTED_DURATION_MS:
+        raise PreviewError("songs longer than 10 minutes are not supported")
+
+    skin = load_taiko_skin()
+    render_cache: dict = {}
+    slider_multiplier = float(beatmap.difficulty["SliderMultiplier"])
     mapper = build_scroll_mapper(
         timing_points=beatmap.timing_points,
         chart_end_time=chart_end_time,
@@ -123,21 +124,21 @@ def render_taiko_grid(beatmap: Beatmap, output_path: Path) -> Path:
     font_bpm = ImageFont.load_default(size=BPM_FONT_SIZE)
     font_sv = ImageFont.load_default(size=SV_TEXT_FONT_SIZE)
     sv_changes = build_sv_changes(beatmap.timing_points, chart_end_time, mapper)
-    image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
+    image = Image.new("RGB", (layout.image_width, layout.image_height), IMAGE_BACKGROUND[:3])
     draw = ImageDraw.Draw(image)
 
     for row_index in range(layout.row_count):
-        _draw_row_background(image, skin, layout, row_index)
+        _draw_row_background(image, skin, layout, row_index, render_cache)
 
-    for timing_line in timing_lines:
+    for timing_line in reversed(timing_lines):
         _draw_timing_line(image, draw, skin, timing_line, layout, font_regular, font_note, font_bpm)
 
-    _draw_sv_indicators(draw, sv_changes, layout, font_sv)
+    _draw_sv_indicators(draw, sv_changes, layout, font_sv, reverse_order=True)
 
     for hit_object in reversed(hit_objects):
-        _draw_hit_object(image, hit_object, mapper, skin, layout)
+        _draw_hit_object(image, hit_object, mapper, skin, layout, render_cache)
 
-    image.convert("RGB").save(output_path, optimize=True)
+    image.save(output_path, optimize=True)
     return output_path
 
 
@@ -220,31 +221,32 @@ def _draw_row_background(
     skin: TaikoSkin,
     layout: RenderLayout,
     row_index: int,
+    cache: dict,
 ) -> None:
     row_top = _row_top(row_index)
     row_has_drum = DRAW_DRUM_EACH_ROW or row_index == 0
 
     if row_has_drum:
         left_key = (id(skin.bar_left), layout.left_panel_width, ROW_HEIGHT)
-        left = _render_cache.get(left_key)
+        left = cache.get(left_key)
         if left is None:
             left = _resize_sprite(skin.bar_left, (layout.left_panel_width, ROW_HEIGHT))
-            _render_cache[left_key] = left
+            cache[left_key] = left
         right_key = (id(skin.bar_right), layout.right_panel_width, ROW_HEIGHT)
-        right = _render_cache.get(right_key)
+        right = cache.get(right_key)
         if right is None:
             right = _resize_sprite(skin.bar_right, (layout.right_panel_width, ROW_HEIGHT))
-            _render_cache[right_key] = right
-        image.alpha_composite(left, (PAGE_MARGIN_X, row_top))
-        image.alpha_composite(right, (PAGE_MARGIN_X + layout.left_panel_width, row_top))
+            cache[right_key] = right
+        image.paste(left, (PAGE_MARGIN_X, row_top), left)
+        image.paste(right, (PAGE_MARGIN_X + layout.left_panel_width, row_top), right)
         return
 
     full_key = (id(skin.bar_right), layout.content_width, ROW_HEIGHT)
-    full_row = _render_cache.get(full_key)
+    full_row = cache.get(full_key)
     if full_row is None:
         full_row = _resize_sprite(skin.bar_right, (layout.content_width, ROW_HEIGHT))
-        _render_cache[full_key] = full_row
-    image.alpha_composite(full_row, (PAGE_MARGIN_X, row_top))
+        cache[full_key] = full_row
+    image.paste(full_row, (PAGE_MARGIN_X, row_top), full_row)
 
 
 def _draw_timing_line(
@@ -268,7 +270,7 @@ def _draw_timing_line(
         # 小节线直接使用皮肤里的 barline 贴图，更接近游戏观感。
         line_width = max(1, round(skin.bar_line.width * ROW_HEIGHT / skin.bar_line.height))
         line_sprite = _resize_sprite(skin.bar_line, (line_width, ROW_HEIGHT))
-        image.alpha_composite(line_sprite, (round(line_x - line_sprite.width / 2), line_y0))
+        image.paste(line_sprite, (round(line_x - line_sprite.width / 2), line_y0), line_sprite)
     else:
         draw.line((line_x, line_y0, line_x, line_y1), fill=BEAT_LINE_COLOR, width=1)
 
@@ -342,15 +344,15 @@ def _draw_hit_object(
     mapper: ScrollPositionMapper,
     skin: TaikoSkin,
     layout: RenderLayout,
+    cache: dict,
 ) -> None:
-    # taiko 里普通 note、drumroll、swell 的绘制方式不同，这里先做一次分派。
     if hit_object.hit_type & SWELL_FLAG:
-        _draw_span_object(image, hit_object, mapper, skin, layout, is_swell=True)
+        _draw_span_object(image, hit_object, mapper, skin, layout, cache, is_swell=True)
         return
     if hit_object.hit_type & DRUMROLL_FLAG:
-        _draw_span_object(image, hit_object, mapper, skin, layout, is_swell=False)
+        _draw_span_object(image, hit_object, mapper, skin, layout, cache, is_swell=False)
         return
-    _draw_circle_object(image, hit_object, mapper, skin, layout)
+    _draw_circle_object(image, hit_object, mapper, skin, layout, cache)
 
 
 def _draw_circle_object(
@@ -359,6 +361,7 @@ def _draw_circle_object(
     mapper: ScrollPositionMapper,
     skin: TaikoSkin,
     layout: RenderLayout,
+    cache: dict,
 ) -> None:
     absolute_position = mapper.position_at(hit_object.start_time)
     # 物件绝对位置先换算出所在行，再换算成该行内部的局部 x。
@@ -373,7 +376,7 @@ def _draw_circle_object(
     overlay_sprite = skin.big_hit_circle_overlay if is_strong else skin.hit_circle_overlay
     color = RIM_NOTE_COLOR if is_rim else CENTRE_NOTE_COLOR
 
-    _draw_note_sprite(image, base_sprite, overlay_sprite, color, diameter, center_x, center_y)
+    _draw_note_sprite(image, base_sprite, overlay_sprite, color, diameter, center_x, center_y, cache)
 
 
 def _draw_span_object(
@@ -382,6 +385,7 @@ def _draw_span_object(
     mapper: ScrollPositionMapper,
     skin: TaikoSkin,
     layout: RenderLayout,
+    cache: dict,
     is_swell: bool,
 ) -> None:
     absolute_start = mapper.position_at(hit_object.start_time)
@@ -402,8 +406,8 @@ def _draw_span_object(
 
     head_center_x = round(_row_chart_left(layout, row_start) + (absolute_start - row_start * layout.max_row_width))
     tail_join_x = round(_row_chart_left(layout, row_end) + (absolute_end - row_end * layout.max_row_width))
-    _draw_span_head(image, skin, span_color, head_center_x, _row_center_y(row_start), head_diameter, is_swell)
-    _draw_span_tail(image, span_color, tail_join_x, _row_center_y(row_end), body_height)
+    _draw_span_head(image, skin, span_color, head_center_x, _row_center_y(row_start), head_diameter, cache, is_swell)
+    _draw_span_tail(image, span_color, tail_join_x, _row_center_y(row_end), body_height, cache)
 
 
 def _draw_roll_body(
@@ -420,7 +424,7 @@ def _draw_roll_body(
 
     # roll-middle 只有 2px 宽，本质就是沿 x 方向拉伸出身体。
     body = _tint_sprite(skin.roll_middle, color, (max(1, end_x - start_x), height))
-    image.alpha_composite(body, (start_x, round(center_y - height / 2)))
+    image.paste(body, (start_x, round(center_y - height / 2)), body)
 
 
 def _draw_span_head(
@@ -430,11 +434,12 @@ def _draw_span_head(
     center_x: int,
     center_y: int,
     diameter: int,
+    cache: dict,
     is_swell: bool,
 ) -> None:
     base_sprite = skin.big_hit_circle if is_swell else skin.hit_circle
     overlay_sprite = skin.big_hit_circle_overlay if is_swell else skin.hit_circle_overlay
-    _draw_note_sprite(image, base_sprite, overlay_sprite, color, diameter, center_x, center_y)
+    _draw_note_sprite(image, base_sprite, overlay_sprite, color, diameter, center_x, center_y, cache)
 
 
 def _draw_span_tail(
@@ -443,14 +448,15 @@ def _draw_span_tail(
     join_x: int,
     center_y: int,
     height: int,
+    cache: dict,
 ) -> None:
-    tail = _build_roll_tail_sprite(color, height)
-    image.alpha_composite(tail, (join_x, round(center_y - height / 2)))
+    tail = _build_roll_tail_sprite(color, height, cache)
+    image.paste(tail, (join_x, round(center_y - height / 2)), tail)
 
 
-def _build_roll_tail_sprite(color: tuple[int, int, int], height: int) -> Image.Image:
+def _build_roll_tail_sprite(color: tuple[int, int, int], height: int, cache: dict) -> Image.Image:
     key = (color, height)
-    cached = _render_cache.get(key)
+    cached = cache.get(key)
     if cached is not None:
         return cached
     scale = 4
@@ -472,7 +478,7 @@ def _build_roll_tail_sprite(color: tuple[int, int, int], height: int) -> Image.I
         fill=(*color, 255),
     )
     tail = tail.resize((scaled_width // scale, height), Image.Resampling.LANCZOS)
-    _render_cache[key] = tail
+    cache[key] = tail
     return tail
 
 
@@ -484,22 +490,23 @@ def _draw_note_sprite(
     diameter: int,
     center_x: int,
     center_y: int,
+    cache: dict,
 ) -> None:
     base_key = (id(base_sprite), color, diameter)
-    tinted_base = _render_cache.get(base_key)
+    tinted_base = cache.get(base_key)
     if tinted_base is None:
         tinted_base = _tint_sprite(base_sprite, color, diameter)
-        _render_cache[base_key] = tinted_base
+        cache[base_key] = tinted_base
 
     overlay_key = (id(overlay_sprite), diameter)
-    overlay = _render_cache.get(overlay_key)
+    overlay = cache.get(overlay_key)
     if overlay is None:
         overlay = _resize_sprite(overlay_sprite, (diameter, diameter))
-        _render_cache[overlay_key] = overlay
+        cache[overlay_key] = overlay
 
     position = (round(center_x - diameter / 2), round(center_y - diameter / 2))
-    image.alpha_composite(tinted_base, position)
-    image.alpha_composite(overlay, position)
+    image.paste(tinted_base, position, tinted_base)
+    image.paste(overlay, position, overlay)
 
 
 def _row_top(row_index: int) -> int:
@@ -546,8 +553,10 @@ def _draw_sv_indicators(
     sv_changes: list[SvChange],
     layout: RenderLayout,
     font: ImageFont.ImageFont,
+    reverse_order: bool = False,
 ) -> None:
-    for sv_change in sv_changes:
+    items = reversed(sv_changes) if reverse_order else sv_changes
+    for sv_change in items:
         row_index = min(layout.row_count - 1, int(sv_change.position // layout.max_row_width))
         local_position = sv_change.position - row_index * layout.max_row_width
         x = round(_row_chart_left(layout, row_index) + local_position)

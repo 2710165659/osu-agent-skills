@@ -41,7 +41,6 @@ from .config import (
     TOP_BUFFER,
 )
 
-_darken_cache: dict[str, str] = {}
 
 LANE_COLOR_PALETTES = {
     1: ["#e9eef4"],
@@ -94,8 +93,9 @@ def render_mania_grid(beatmap: Beatmap, output_path: Path) -> Path:
     timing_lines = _build_timing_lines(beatmap.timing_points, chart_end_time)
     sv_changes = _build_sv_changes(beatmap.timing_points, chart_end_time)
     layout = _build_layout(key_count, beatmap_duration, chart_end_time)
+    render_cache: dict[str, str] = {}
 
-    image = Image.new("RGBA", (layout.image_width, layout.image_height), IMAGE_BACKGROUND)
+    image = Image.new("RGB", (layout.image_width, layout.image_height), IMAGE_BACKGROUND[:3])
     draw = ImageDraw.Draw(image)
 
     for column_index in range(layout.column_count):
@@ -108,21 +108,21 @@ def render_mania_grid(beatmap: Beatmap, output_path: Path) -> Path:
         _draw_sv_indicator(draw, sv_change, layout, font_sv)
 
     for hit_object in beatmap.hit_objects:
-        _draw_hit_object(draw, hit_object, palette, layout)
+        _draw_hit_object(draw, hit_object, palette, layout, render_cache)
 
-    image.convert("RGB").save(output_path, optimize=True)
+    image.save(output_path, optimize=True)
     return output_path
 
 
-def _darken_hex(color: str, ratio: float) -> str:
+def _darken_hex(color: str, ratio: float, cache: dict[str, str]) -> str:
     key = f"{color}_{ratio}"
-    cached = _darken_cache.get(key)
+    cached = cache.get(key)
     if cached is not None:
         return cached
     channels = [int(color[index : index + 2], 16) for index in (1, 3, 5)]
     darkened = [int(channel * (1 - ratio)) for channel in channels]
     result = "#" + "".join(f"{value:02x}" for value in darkened)
-    _darken_cache[key] = result
+    cache[key] = result
     return result
 
 
@@ -247,11 +247,12 @@ def _draw_hit_object(
     hit_object: ManiaHitObject,
     palette: list[str],
     layout: RenderLayout,
+    cache: dict[str, str],
 ) -> None:
     start_column = min(layout.column_count - 1, hit_object.start_time // layout.time_per_column)
     end_column = min(layout.column_count - 1, hit_object.end_time // layout.time_per_column)
     lane_color = palette[hit_object.lane]
-    hold_color = _darken_hex(lane_color, 0.5)
+    hold_color = _darken_hex(lane_color, 0.5, cache)
 
     for column_index in range(start_column, end_column + 1):
         column_left = PAGE_MARGIN_X + column_index * (layout.column_width + COLUMN_GAP)
