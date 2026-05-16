@@ -347,6 +347,7 @@ def _resolve_slider_timing(start_time: int, timing_points: list[TimingPoint]) ->
             break
         if point.uninherited:
             beat_length = point.beat_length
+            slider_velocity = 1.0
         elif point.beat_length < 0:
             slider_velocity = -100 / point.beat_length
 
