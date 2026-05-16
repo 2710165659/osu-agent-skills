@@ -179,9 +179,8 @@ def _approximate_bezier(points: list[tuple[float, float]]) -> list[tuple[float, 
             result.extend(_bezier_approximate(parent))
         else:
             left, right = _bezier_subdivide(parent)
-            parent[: len(left)] = left
-            stack.append(parent)
             stack.append(right)
+            stack.append(left)
     result.append(points[-1])
     return result
 
@@ -234,11 +233,11 @@ def _approximate_perfect_curve(points: list[tuple[float, float]]) -> list[tuple[
     middle_angle = math.atan2(points[1][1] - centre[1], points[1][0] - centre[0])
     end_angle = math.atan2(points[2][1] - centre[1], points[2][0] - centre[0])
     end_angle = _normalise_arc_end(start_angle, middle_angle, end_angle)
-    theta_range = abs(end_angle - start_angle)
+    theta_range = end_angle - start_angle
 
     # osu! 公式: max(2, ceil(thetaRange / (2 * acos(1 - 0.1/Radius))))
     step_angle = 2 * math.acos(1 - 0.1 / radius) if radius > 0.1 else math.tau
-    steps = max(2, math.ceil(theta_range / step_angle))
+    steps = max(2, math.ceil(abs(theta_range) / step_angle))
     if steps >= 1000:
         return _approximate_bezier_segments(points)
 
@@ -340,18 +339,37 @@ def _fit_path_to_length(
     if travelled <= 0:
         return path
 
-    fitted = list(path)
-    while len(cumulative) > 1 and cumulative[-1] > expected_length + 0.001:
-        fitted.pop()
-        cumulative.pop()
+    if travelled > expected_length:
+        fitted = [path[0]]
+        previous_distance = 0.0
 
-    if len(fitted) < 2:
-        return path[:2] if len(path) >= 2 else path
+        for index in range(1, len(path)):
+            current_distance = cumulative[index]
+            previous = path[index - 1]
+            current = path[index]
 
-    if fitted[-1] == fitted[-2] and expected_length > cumulative[-1]:
+            if current_distance >= expected_length:
+                segment_length = current_distance - previous_distance
+                if segment_length <= 0:
+                    fitted.append(current)
+                else:
+                    ratio = (expected_length - previous_distance) / segment_length
+                    fitted.append((
+                        previous[0] + (current[0] - previous[0]) * ratio,
+                        previous[1] + (current[1] - previous[1]) * ratio,
+                    ))
+                return fitted
+
+            fitted.append(current)
+            previous_distance = current_distance
+
         return fitted
 
-    remaining = expected_length - cumulative[-1]
+    fitted = list(path)
+    if fitted[-1] == fitted[-2]:
+        return fitted
+
+    remaining = expected_length - travelled
     direction = (fitted[-1][0] - fitted[-2][0], fitted[-1][1] - fitted[-2][1])
     direction_length = math.hypot(direction[0], direction[1])
 
