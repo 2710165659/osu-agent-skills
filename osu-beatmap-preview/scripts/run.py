@@ -84,7 +84,6 @@ def main() -> int:
 
         result = generate_preview(
             args.bid,
-            Path(__file__).resolve().parents[1],
             fmt=args.fmt,
             convert=args.convert,
             mods=mod_settings,

@@ -4,8 +4,8 @@ import struct
 from dataclasses import dataclass, replace
 
 from ..errors import PreviewError
-from ..models import Beatmap, CatchHitObject, StandardHitObject, TimingPoint
-from ..standard.slider_path import build_slider_path, path_position_at
+from ..models import Beatmap, CatchHitObject, TimingPoint
+from ..mods import ModSettings
 from .config import (
     BANANA_COLORS,
     BANANA_SCALE,
@@ -17,6 +17,7 @@ from .config import (
     RNG_SEED,
     TINY_DROPLET_SCALE,
 )
+from .slider_path import build_slider_path, path_position_at
 
 
 @dataclass(frozen=True)
@@ -88,13 +89,19 @@ def build_catch_render_objects(
     beatmap: Beatmap,
     hit_objects: list[CatchHitObject],
     combo_colors: list[tuple[int, int, int]],
+    mods: ModSettings | None = None,
+    difficulty: dict[str, float] | None = None,
 ) -> list[CatchRenderObject]:
     """把顶层 catch 物件展开成真正落下的 fruit / droplet / banana 列表。"""
-    slider_tick_rate = float(beatmap.difficulty["SliderTickRate"])
-    slider_multiplier = float(beatmap.difficulty["SliderMultiplier"])
+    effective_difficulty = difficulty or _difficulty_from_beatmap(beatmap)
+    slider_tick_rate = effective_difficulty["SliderTickRate"]
+    slider_multiplier = effective_difficulty["SliderMultiplier"]
     beatmap_format_version = int(beatmap.general.get("FormatVersion", "14"))
     render_objects: list[CatchRenderObject] = []
     rng = LegacyRandom(RNG_SEED)
+    hard_rock_offsets = mods is not None and mods.hard_rock
+    last_position: float | None = None
+    last_start_time = 0.0
 
     for index, hit_object in enumerate(hit_objects):
         combo_color = _color_for_index(index, combo_colors)
@@ -102,6 +109,10 @@ def build_catch_render_objects(
             render_objects.extend(_build_banana_shower_objects(hit_object, index, rng))
             continue
         if _is_slider(hit_object):
+            # HR 位移只作用于顶层 Fruit；遇到 JuiceStream 时，stable/lazer 只把“上一个位置”
+            # 更新为滑条最后一个控制点，并继续消费 nested droplet 的随机数。
+            last_position = _stable_slider_end_x(hit_object)
+            last_start_time = float(hit_object.start_time)
             render_objects.extend(
                 _build_juice_stream_objects(
                     hit_object=hit_object,
@@ -115,9 +126,17 @@ def build_catch_render_objects(
                 )
             )
             continue
-        render_objects.append(_build_fruit_object(hit_object.x, hit_object.start_time, index, combo_color))
+        fruit = _build_fruit_object(hit_object.x, hit_object.start_time, index, combo_color)
+        if hard_rock_offsets:
+            fruit, last_position, last_start_time = _apply_hard_rock_fruit_offset(
+                fruit,
+                last_position,
+                last_start_time,
+                rng,
+            )
+        render_objects.append(fruit)
 
-    return _apply_hyper_dash(render_objects, float(beatmap.difficulty["CircleSize"]))
+    return _apply_hyper_dash(render_objects, effective_difficulty["CircleSize"])
 
 
 def _color_for_index(
@@ -175,7 +194,7 @@ def _build_juice_stream_objects(
     if hit_object.slider_type is None:
         raise PreviewError("catch slider is missing path type")
 
-    path = build_slider_path(_to_standard_slider(hit_object))
+    path = build_slider_path(hit_object)
     events = _build_slider_events(hit_object, slider_tick_rate, slider_multiplier, beatmap_format_version, timing_points)
     nested_objects: list[CatchRenderObject] = []
     previous_event: SliderEvent | None = None
@@ -408,10 +427,71 @@ def _apply_stream_offsets(
         yield catch_object
 
 
+def _stable_slider_end_x(hit_object: CatchHitObject) -> float:
+    if hit_object.slider_points:
+        return float(hit_object.slider_points[-1][0])
+    return float(hit_object.x)
+
+
+def _apply_hard_rock_fruit_offset(
+    catch_object: CatchRenderObject,
+    last_position: float | None,
+    last_start_time: float,
+    rng: LegacyRandom,
+) -> tuple[CatchRenderObject, float | None, float]:
+    offset_position = float(catch_object.x)
+    start_time = float(catch_object.start_time)
+
+    if last_position is None or last_position == 0:
+        return catch_object, offset_position, start_time
+
+    position_diff = offset_position - last_position
+    # stable 使用 int 时间差；这里保留截断行为，否则随机偏移会错位。
+    time_diff = int(start_time - last_start_time)
+
+    if time_diff > 1000:
+        return catch_object, offset_position, start_time
+
+    if position_diff == 0:
+        offset_position = _apply_random_offset(offset_position, time_diff / 4.0, rng)
+        return replace(catch_object, x=offset_position), last_position, last_start_time
+
+    if abs(position_diff) < time_diff / 3:
+        offset_position = _apply_offset(offset_position, position_diff)
+
+    return replace(catch_object, x=offset_position), offset_position, start_time
+
+
+def _apply_random_offset(position: float, max_offset: float, rng: LegacyRandom) -> float:
+    right = rng.next_bool()
+    random_offset = min(20.0, float(rng.next(0, max(0.0, max_offset))))
+
+    if right:
+        if position + random_offset <= PLAYFIELD_WIDTH:
+            return position + random_offset
+        return position - random_offset
+
+    if position - random_offset >= 0:
+        return position - random_offset
+    return position + random_offset
+
+
+def _apply_offset(position: float, amount: float) -> float:
+    if amount > 0:
+        if position + amount < PLAYFIELD_WIDTH:
+            return position + amount
+        return position
+
+    if position + amount > 0:
+        return position + amount
+    return position
+
+
 def _apply_hyper_dash(
     render_objects: list[CatchRenderObject],
     circle_size: float,
 ) -> list[CatchRenderObject]:
+    render_objects = [_clamp_effective_x(catch_object) for catch_object in render_objects]
     palpable_indexes = [
         index
         for index, catch_object in enumerate(render_objects)
@@ -451,6 +531,24 @@ def _apply_hyper_dash(
 
 
 
+def _clamp_effective_x(catch_object: CatchRenderObject) -> CatchRenderObject:
+    clamped_x = max(0.0, min(float(catch_object.x), PLAYFIELD_WIDTH))
+    if clamped_x == catch_object.x:
+        return catch_object
+    return replace(catch_object, x=clamped_x)
+
+
+def _difficulty_from_beatmap(beatmap: Beatmap) -> dict[str, float]:
+    return {
+        "CircleSize": float(beatmap.difficulty.get("CircleSize", "5")),
+        "OverallDifficulty": float(beatmap.difficulty.get("OverallDifficulty", "5")),
+        "ApproachRate": float(beatmap.difficulty.get("ApproachRate", beatmap.difficulty.get("OverallDifficulty", "5"))),
+        "HPDrainRate": float(beatmap.difficulty.get("HPDrainRate", "5")),
+        "SliderMultiplier": float(beatmap.difficulty.get("SliderMultiplier", "1.4")),
+        "SliderTickRate": float(beatmap.difficulty.get("SliderTickRate", "1")),
+    }
+
+
 def _event_time(catch_object: CatchRenderObject) -> float:
     return catch_object.event_time if catch_object.event_time is not None else float(catch_object.start_time)
 
@@ -473,24 +571,6 @@ def _build_fruit_object(
         scale_factor=1.0,
         rotation=_fruit_rotation(start_time),
         event_time=event_time,
-    )
-
-
-def _to_standard_slider(hit_object: CatchHitObject) -> StandardHitObject:
-    return StandardHitObject(
-        x=hit_object.x,
-        y=hit_object.y,
-        start_time=hit_object.start_time,
-        end_time=hit_object.end_time,
-        hit_type=hit_object.hit_type,
-        hitsound=0,
-        new_combo=hit_object.new_combo,
-        combo_offset=hit_object.combo_offset,
-        slider_type=hit_object.slider_type,
-        slider_points=hit_object.slider_points,
-        slider_repeats=hit_object.slider_repeats,
-        slider_pixel_length=hit_object.slider_pixel_length,
-        slider_edge_hitsounds=(),
     )
 
 

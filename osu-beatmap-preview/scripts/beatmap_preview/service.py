@@ -18,7 +18,6 @@ from .mania.renderer import render_mania_grid
 
 def generate_preview(
     bid: str,
-    skill_root: Path,
     fmt: str | None = None,
     convert: str | None = None,
     mods: ModSettings | None = None,
@@ -121,7 +120,10 @@ def _render_preview_for_mode(
         return render_taiko_grid(beatmap, output_path, mods=mods)
 
     if target_mode == 2:
-        return render_catch_grid(beatmap, output_path)
+        if beatmap.mode != 2:
+            from .convert import convert_beatmap
+            beatmap = convert_beatmap(beatmap, target_mode, mods)
+        return render_catch_grid(beatmap, output_path, mods=mods)
 
     if target_mode == 3:
         if beatmap.mode != 3:

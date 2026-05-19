@@ -50,4 +50,8 @@ def convert_beatmap(
         from .taiko.convert import convert_beatmap as _taiko_convert
         return _taiko_convert(beatmap, target_mode, mods)
 
+    if target_mode == 2:
+        from .catch.convert import convert_beatmap as _catch_convert
+        return _catch_convert(beatmap, target_mode, mods)
+
     raise PreviewError(f"conversion to mode {target_mode} is not yet implemented")

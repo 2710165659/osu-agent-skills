@@ -8,9 +8,10 @@ MAX_AREA_HEIGHT_4_TO_5_MIN = 10000  # [4, 5) 分钟最大列高
 MAX_AREA_HEIGHT_5_TO_6_MIN = 11500  # [5, 6) 分钟最大列高
 FIXED_COLUMN_COUNT_6_TO_10_MIN = 30  # [6, 10) 分钟固定列数
 
-PIXELS_PER_MS = 0.4  # 纵向时间轴像素密度
 PLAYFIELD_WIDTH = 512  # catch 横向游玩宽度
 PLAYFIELD_HEIGHT = 384  # catch 逻辑游玩高度
+STABLE_FRUIT_START_Y = -100  # stable/lazer 中水果出现时的逻辑 Y
+STABLE_CATCHER_Y = 340  # stable/lazer 中水果抵达判定线的逻辑 Y
 OBJECT_RADIUS = 64  # lazer/stable catch 逻辑半径
 
 PAGE_MARGIN_X = 20  # 图片左右外边距
