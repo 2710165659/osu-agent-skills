@@ -115,7 +115,10 @@ def _render_preview_for_mode(
         return output_path
 
     if target_mode == 1:
-        return render_taiko_grid(beatmap, output_path)
+        if beatmap.mode != 1:
+            from .convert import convert_beatmap
+            beatmap = convert_beatmap(beatmap, target_mode, mods)
+        return render_taiko_grid(beatmap, output_path, mods=mods)
 
     if target_mode == 2:
         return render_catch_grid(beatmap, output_path)

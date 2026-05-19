@@ -21,9 +21,9 @@ def parse_beatmap(beatmap_path: Path) -> Beatmap:
         sections = _split_sections(content)
 
         # .osu 文件把 Metadata、Difficulty 等内容拆在不同 section 中；后续解析都基于这些分组。
-        metadata = _parse_key_value_section(sections, "Metadata")
+        metadata = _parse_key_value_section(sections, "Metadata") if "Metadata" in sections else _default_metadata()
         difficulty = _parse_key_value_section(sections, "Difficulty")
-        general = _parse_key_value_section(sections, "General")
+        general = _parse_key_value_section(sections, "General") if "General" in sections else {"Mode": "0"}
         general["FormatVersion"] = str(_parse_format_version(content))
         timing_points = _parse_timing_points(sections)
         break_periods = _parse_break_periods(sections)
@@ -93,6 +93,17 @@ def _parse_key_value_section(sections: dict[str, list[str]], section_name: str) 
         values[key.strip()] = value.strip()
 
     return values
+
+
+def _default_metadata() -> dict[str, str]:
+    return {
+        "Title": "Unknown",
+        "TitleUnicode": "",
+        "Artist": "Unknown",
+        "ArtistUnicode": "",
+        "Creator": "Unknown",
+        "Version": "Unknown",
+    }
 
 
 def _parse_timing_points(sections: dict[str, list[str]]) -> list[TimingPoint]:

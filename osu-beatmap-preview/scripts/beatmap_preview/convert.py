@@ -46,4 +46,8 @@ def convert_beatmap(
         from .mania.convert import convert_beatmap as _mania_convert
         return _mania_convert(beatmap, target_mode, mods)
 
+    if target_mode == 1:
+        from .taiko.convert import convert_beatmap as _taiko_convert
+        return _taiko_convert(beatmap, target_mode, mods)
+
     raise PreviewError(f"conversion to mode {target_mode} is not yet implemented")
